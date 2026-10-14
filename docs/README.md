@@ -20,7 +20,7 @@
 
 ## 首次部署
 
-1. 运行 `scripts\build.cmd`，或直接取 `D:\project\qms-edge-agent\outputs\jingde-eap-forwarder` 中已经编译好的文件夹到中间电脑，例如 `C:\QmsGateway\Jingde`。
+1. 运行 `scripts\build.cmd`，然后运行 `powershell -ExecutionPolicy Bypass -File scripts\verify-release-smoke.ps1`，确认发布包在任意工作目录中仍会从 EXE 同目录加载所需的 INI；或直接取 `D:\project\qms-edge-agent\outputs\jingde-eap-forwarder` 中已经编译好的文件夹到中间电脑，例如 `C:\QmsGateway\Jingde`。
 2. 双击 `start-gateway.cmd` 打开监控窗口，点击“服务配置”：填写 `QmsBaseUrl`、`GatewayToken`，并确认精德、森泉、科视的监听地址分别与设备端配置一致。也可在程序未运行时编辑同目录 `JingdeEapForwarder.ini`。
 3. 在 QMS 的“设备网关映射”中，将精德 `EquipmentID`、森泉 `device_code`、科视 `MachineNO`（曝光结果为 `CMACHINE_CODE`）分别配置为来源用户名和设备名称。网关使用该值关联 QMS 设备。
 4. 以管理员身份在中间电脑放行 HTTP URL 和防火墙。若三路均监听所有网卡，可执行：

@@ -18,8 +18,8 @@ namespace JingdeEapForwarder
         [STAThread]
         private static int Main(string[] args)
         {
-            if (HasArgument(args, "--self-test")) return SelfTest.Run();
             string configPath = FindConfigPath(args);
+            if (HasArgument(args, "--self-test")) return SelfTest.Run(configPath);
             if (HasArgument(args, "--headless")) return RunHeadless(configPath);
             try
             {
@@ -2249,10 +2249,12 @@ namespace JingdeEapForwarder
 
     internal static class SelfTest
     {
-        public static int Run()
+        public static int Run(string configPath)
         {
             try
             {
+                // Verify the same configuration resolution and validation path used by a normal launch.
+                Settings.Load(configPath);
                 JavaScriptSerializer serializer = new JavaScriptSerializer();
                 Dictionary<string, object> status = serializer.DeserializeObject("{\"Header\":{\"MessageName\":\"EQPStatusChangeReport\",\"TransactionID\":\"20260928101213123456\",\"UserID\":\"01\"},\"Body\":{\"EquipmentID\":\"JD-01\",\"CurrentAxis\":\"4\",\"Status\":\"2\"},\"Result\":{\"Code\":1}}") as Dictionary<string, object>;
                 Dictionary<string, object> translated = EapTranslator.Translate("EQPStatusChangeReport", status, "192.168.10.11", new DateTime(2026, 9, 28, 10, 12, 14));

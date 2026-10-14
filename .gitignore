@@ -1,5 +1,6 @@
 # Build and release output
 outputs/
+*.exe
 bin/
 obj/
 
