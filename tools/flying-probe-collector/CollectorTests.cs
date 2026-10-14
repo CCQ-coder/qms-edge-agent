@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Globalization;
+using System.IO;
 
 internal static class CollectorTests
 {
@@ -13,6 +14,10 @@ internal static class CollectorTests
             Run("ParseSample", ParseSample);
             Run("RejectMalformed", RejectMalformed);
             Run("MapEvent", MapEvent);
+            Run("RecoverPending", RecoverPending);
+            Run("RecoverCheckpoint", RecoverCheckpoint);
+            Run("RejectCorruptStores", RejectCorruptStores);
+            Run("FailedWriteKeepsMemory", FailedWriteKeepsMemory);
             Console.WriteLine("Passed " + passed.ToString(CultureInfo.InvariantCulture) + " test(s).");
             return 0;
         }
@@ -94,6 +99,96 @@ internal static class CollectorTests
     {
         object item;
         return value.TryGetValue(key, out item) ? item as string : null;
+    }
+
+    private static void RecoverPending()
+    {
+        InTempDirectory(delegate(string directory)
+        {
+            string path = Path.Combine(directory, "pending.json");
+            PendingEventStore store = new PendingEventStore(path);
+            Dictionary<string, object> item = new Dictionary<string, object>();
+            item["recordNo"] = "R-1";
+            item["machineName"] = "FPT-01";
+            Assert(store.Enqueue(item), "first enqueue");
+            Assert(!store.Enqueue(item), "duplicate not enqueued");
+            PendingEventStore recovered = new PendingEventStore(path);
+            Assert(recovered.Snapshot().Count == 1, "pending survives restart");
+            Assert(Text(recovered.Snapshot()[0], "machineName") == "FPT-01", "pending payload survives restart");
+            recovered.Remove("R-1");
+            Assert(new PendingEventStore(path).Snapshot().Count == 0, "removal survives restart");
+        });
+    }
+
+    private static void RecoverCheckpoint()
+    {
+        InTempDirectory(delegate(string directory)
+        {
+            string path = Path.Combine(directory, "scan.json");
+            ScanCheckpointStore store = new ScanCheckpointStore(path);
+            store.Record("FPT-01/MAT-1.txt", "R-1");
+            ScanCheckpointStore recovered = new ScanCheckpointStore(path);
+            Assert(recovered.Contains("FPT-01/MAT-1.txt", "R-1"), "checkpoint survives restart");
+            Assert(!recovered.Contains("FPT-01/MAT-1.txt", "R-2"), "new snapshot not checkpointed");
+        });
+    }
+
+    private static void RejectCorruptStores()
+    {
+        InTempDirectory(delegate(string directory)
+        {
+            string queuePath = Path.Combine(directory, "pending.json");
+            string scanPath = Path.Combine(directory, "scan.json");
+            File.WriteAllText(queuePath, "{not json");
+            File.WriteAllText(scanPath, "{not json");
+            AssertThrowsInvalidData(delegate { new PendingEventStore(queuePath); }, "corrupt pending queue");
+            AssertThrowsInvalidData(delegate { new ScanCheckpointStore(scanPath); }, "corrupt scan state");
+            Assert(File.ReadAllText(queuePath) == "{not json", "pending queue not erased");
+            Assert(File.ReadAllText(scanPath) == "{not json", "scan state not erased");
+        });
+    }
+
+    private static void FailedWriteKeepsMemory()
+    {
+        InTempDirectory(delegate(string directory)
+        {
+            string queuePath = Path.Combine(directory, "queue-as-directory");
+            string scanPath = Path.Combine(directory, "scan-as-directory");
+            Directory.CreateDirectory(queuePath);
+            Directory.CreateDirectory(scanPath);
+            PendingEventStore queue = new PendingEventStore(queuePath);
+            ScanCheckpointStore checkpoints = new ScanCheckpointStore(scanPath);
+            Dictionary<string, object> item = new Dictionary<string, object>();
+            item["recordNo"] = "R-1";
+            AssertThrowsAny(delegate { queue.Enqueue(item); }, "queue write failure");
+            AssertThrowsAny(delegate { checkpoints.Record("FPT-01/MAT-1.txt", "R-1"); }, "checkpoint write failure");
+            Assert(queue.Snapshot().Count == 0, "failed enqueue leaves memory unchanged");
+            Assert(!checkpoints.Contains("FPT-01/MAT-1.txt", "R-1"), "failed checkpoint leaves memory unchanged");
+        });
+    }
+
+    private static void InTempDirectory(Action<string> test)
+    {
+        string root = Environment.GetEnvironmentVariable("FPT_TEST_ROOT");
+        if (string.IsNullOrEmpty(root)) root = Path.GetTempPath();
+        string directory = Path.Combine(root, "fpt-test-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        try { test(directory); }
+        finally { Directory.Delete(directory, true); }
+    }
+
+    private static void AssertThrowsInvalidData(Action action, string description)
+    {
+        try { action(); }
+        catch (InvalidDataException) { return; }
+        throw new Exception("Expected InvalidDataException: " + description);
+    }
+
+    private static void AssertThrowsAny(Action action, string description)
+    {
+        try { action(); }
+        catch (Exception) { return; }
+        throw new Exception("Expected failure: " + description);
     }
 
     private static void AssertThrowsFormat(Action action, string description)
