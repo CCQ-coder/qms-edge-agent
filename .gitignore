@@ -1,0 +1,19 @@
+# Build and release output
+outputs/
+bin/
+obj/
+
+# Field runtime state
+data/
+logs/
+*.log
+JingdeEapForwarder-startup-errors.log
+
+# Local configuration overrides
+config/*.local.ini
+
+# IDE metadata
+.vs/
+.idea/
+*.user
+*.suo
