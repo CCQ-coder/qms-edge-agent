@@ -107,38 +107,41 @@ internal static class Program
                 File.AppendAllText(settings.LogFile, line + Environment.NewLine, Encoding.UTF8);
                 Console.WriteLine(line);
             };
-            PendingEventStore pending = new PendingEventStore(settings.QueueFile);
-            ScanCheckpointStore checkpoints = new ScanCheckpointStore(settings.CheckpointFile);
-            ProbeScanner scanner = new ProbeScanner(settings.SourceRoot, pending, checkpoints, log);
-            QmsSender sender = new QmsSender(settings.QmsBaseUrl, settings.GatewayToken, settings.BearerToken,
-                settings.RequestTimeoutSeconds, pending, log);
-            Console.CancelKeyPress += delegate(object source, ConsoleCancelEventArgs eventArgs)
+            using (new CollectorOwnership(settings.QueueFile))
             {
-                eventArgs.Cancel = true;
-                stopping = true;
-            };
-            log("Flying probe collector started. Source=" + settings.SourceRoot);
-            while (!stopping)
-            {
-                try
+                PendingEventStore pending = new PendingEventStore(settings.QueueFile);
+                ScanCheckpointStore checkpoints = new ScanCheckpointStore(settings.CheckpointFile);
+                ProbeScanner scanner = new ProbeScanner(settings.SourceRoot, pending, checkpoints, log);
+                QmsSender sender = new QmsSender(settings.QmsBaseUrl, settings.GatewayToken, settings.BearerToken,
+                    settings.RequestTimeoutSeconds, pending, log);
+                Console.CancelKeyPress += delegate(object source, ConsoleCancelEventArgs eventArgs)
                 {
-                    scanner.ScanOnce();
-                    sender.SendPending();
-                }
-                catch (Exception error)
+                    eventArgs.Cancel = true;
+                    stopping = true;
+                };
+                log("Flying probe collector started. Source=" + settings.SourceRoot);
+                while (!stopping)
                 {
-                    log("Collector cycle failed: " + error.Message);
+                    RunCycle(scanner.ScanOnce, sender.SendPending, log);
+                    int ticks = settings.ScanIntervalSeconds * 4;
+                    for (int index = 0; index < ticks && !stopping; index++) Thread.Sleep(250);
                 }
-                int ticks = settings.ScanIntervalSeconds * 4;
-                for (int index = 0; index < ticks && !stopping; index++) Thread.Sleep(250);
+                log("Flying probe collector stopped.");
+                return 0;
             }
-            log("Flying probe collector stopped.");
-            return 0;
         }
         catch (Exception error)
         {
             Console.Error.WriteLine("Flying probe collector failed: " + error);
             return 1;
         }
+    }
+
+    internal static void RunCycle(Action scan, Action send, Action<string> log)
+    {
+        try { scan(); }
+        catch (Exception error) { log("Scan failed: " + error.Message); }
+        try { send(); }
+        catch (Exception error) { log("QMS delivery cycle failed: " + error.Message); }
     }
 }

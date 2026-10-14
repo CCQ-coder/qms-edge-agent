@@ -62,16 +62,18 @@ internal sealed class QmsSender
         request.Timeout = timeoutSeconds * 1000;
         request.ReadWriteTimeout = timeoutSeconds * 1000;
         request.KeepAlive = false;
+        request.AllowAutoRedirect = false;
         request.ServicePoint.Expect100Continue = false;
         request.Headers["X-Gateway-Token"] = gatewayToken;
         if (!string.IsNullOrEmpty(bearerToken)) request.Headers[HttpRequestHeader.Authorization] = "Bearer " + bearerToken;
         request.ContentLength = bytes.Length;
         using (Stream output = request.GetRequestStream()) output.Write(bytes, 0, bytes.Length);
-        using (HttpWebResponse response = (HttpWebResponse)request.GetResponse())
+        HttpWebResponse response = (HttpWebResponse)request.GetResponse();
+        if ((int)response.StatusCode < 200 || (int)response.StatusCode >= 300)
         {
-            if ((int)response.StatusCode < 200 || (int)response.StatusCode >= 300)
-                throw new WebException("QMS returned a non-success response.", null, WebExceptionStatus.ProtocolError, response);
+            throw new WebException("QMS returned a non-success response.", null, WebExceptionStatus.ProtocolError, response);
         }
+        response.Close();
     }
 
     private void Log(string message)

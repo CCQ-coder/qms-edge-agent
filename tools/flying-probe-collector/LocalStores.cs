@@ -5,10 +5,35 @@ using System.IO;
 using System.Text;
 using System.Web.Script.Serialization;
 
+internal sealed class CollectorOwnership : IDisposable
+{
+    private readonly FileStream handle;
+
+    public CollectorOwnership(string queuePath)
+    {
+        string lockPath = Path.GetFullPath(queuePath) + ".lock";
+        string directory = Path.GetDirectoryName(lockPath);
+        if (!Directory.Exists(directory)) Directory.CreateDirectory(directory);
+        try
+        {
+            handle = new FileStream(lockPath, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None);
+        }
+        catch (IOException error)
+        {
+            throw new IOException("Collector storage is already in use: " + queuePath, error);
+        }
+    }
+
+    public void Dispose()
+    {
+        handle.Dispose();
+    }
+}
+
 internal sealed class PendingEventStore
 {
     private readonly string path;
-    private readonly JavaScriptSerializer serializer = new JavaScriptSerializer();
+    private readonly JavaScriptSerializer serializer = new JavaScriptSerializer { MaxJsonLength = int.MaxValue };
     private List<Dictionary<string, object>> items = new List<Dictionary<string, object>>();
 
     public PendingEventStore(string path)
@@ -72,7 +97,7 @@ internal sealed class PendingEventStore
 internal sealed class ScanCheckpointStore
 {
     private readonly string path;
-    private readonly JavaScriptSerializer serializer = new JavaScriptSerializer();
+    private readonly JavaScriptSerializer serializer = new JavaScriptSerializer { MaxJsonLength = int.MaxValue };
     private Dictionary<string, string> records = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
 
     public ScanCheckpointStore(string path)

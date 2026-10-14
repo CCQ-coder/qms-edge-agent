@@ -16,6 +16,8 @@
 
 `data\pending-events.json` 保存待发送事件；只有 QMS 返回 HTTP `2xx` 才删除。`data\scan-checkpoints.json` 保存每个文件最后入队的快照编号。两者损坏时程序会报错停止，避免静默丢失数据；请保留文件并修复后重启。`logs\flying-probe-collector.log` 记录扫描和发送结果，不写入令牌。共享目录或 QMS 暂时不可用时，程序保留本地状态并重试；不要在程序运行中删除或修改这些数据文件。
 
+程序运行时独占 `data\pending-events.json.lock`，避免重复启动造成队列覆盖。若第二份程序提示 `already in use`，先检查现有采集进程；进程退出后锁会自动释放，锁文件本身留在磁盘上。QMS 返回重定向时会保留事件并重试，不把登录页的成功响应算作上报成功。
+
 ## 现场验证
 
 1. 用运行程序的 Windows 账户打开共享目录，确认能看到设备子目录和 TXT 文件。

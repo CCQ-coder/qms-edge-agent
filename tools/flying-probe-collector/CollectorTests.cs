@@ -6,6 +6,7 @@ using System.Globalization;
 using System.IO;
 using System.Net;
 using System.Net.Sockets;
+using System.Reflection;
 using System.Text;
 using System.Threading;
 using System.Web.Script.Serialization;
@@ -23,6 +24,7 @@ internal static class CollectorTests
             Run("MapEvent", MapEvent);
             Run("RecoverPending", RecoverPending);
             Run("RecoverCheckpoint", RecoverCheckpoint);
+            Run("RecoverLargeStores", RecoverLargeStores);
             Run("RejectCorruptStores", RejectCorruptStores);
             Run("FailedWriteKeepsMemory", FailedWriteKeepsMemory);
             Run("FirstScanWaitsForStability", FirstScanWaitsForStability);
@@ -34,9 +36,12 @@ internal static class CollectorTests
             Run("AcceptedPostRemovesEvent", AcceptedPostRemovesEvent);
             Run("RejectOneContinueNext", RejectOneContinueNext);
             Run("NetworkFailureRetains", NetworkFailureRetains);
+            Run("RedirectRetainsEvent", RedirectRetainsEvent);
             Run("NoBearerWhenEmpty", NoBearerWhenEmpty);
             Run("LoadSettingsRelativeToIni", LoadSettingsRelativeToIni);
             Run("BuildReleaseLayout", BuildReleaseLayout);
+            Run("SecondLaunchFailsClearly", SecondLaunchFailsClearly);
+            Run("ScanFailureStillAttemptsDelivery", ScanFailureStillAttemptsDelivery);
             Console.WriteLine("Passed " + passed.ToString(CultureInfo.InvariantCulture) + " test(s).");
             return 0;
         }
@@ -151,6 +156,25 @@ internal static class CollectorTests
             Assert(!recovered.Contains("FPT-01/MAT-1.txt", "R-2"), "new snapshot not checkpointed");
         });
     }
+
+    private static void RecoverLargeStores()
+    {
+        InTempDirectory(delegate(string directory)
+        {
+            string queuePath = Path.Combine(directory, "pending.json");
+            string statePath = Path.Combine(directory, "scan.json");
+            string longValue = new string('X', 2100000);
+            PendingEventStore queue = new PendingEventStore(queuePath);
+            Dictionary<string, object> item = EventWithRecord("R-large");
+            item["largeAttribute"] = longValue;
+            queue.Enqueue(item);
+            Assert(new PendingEventStore(queuePath).Snapshot().Count == 1, "large queue survives restart");
+            ScanCheckpointStore state = new ScanCheckpointStore(statePath);
+            state.Record(longValue, "R-large");
+            Assert(new ScanCheckpointStore(statePath).Contains(longValue, "R-large"), "large checkpoint survives restart");
+        });
+    }
+
 
     private static void RejectCorruptStores()
     {
@@ -390,6 +414,24 @@ internal static class CollectorTests
         });
     }
 
+    private static void RedirectRetainsEvent()
+    {
+        InTempDirectory(delegate(string directory)
+        {
+            PendingEventStore queue = new PendingEventStore(Path.Combine(directory, "pending.json"));
+            queue.Enqueue(EventWithRecord("R-redirect"));
+            using (HttpFixture login = new HttpFixture(200))
+            using (HttpFixture endpoint = new HttpFixture(302))
+            {
+                endpoint.RedirectLocation = login.BaseUrl + "/login";
+                new QmsSender(endpoint.BaseUrl, "gateway-secret", "", 2, queue, delegate(string message) { }).SendPending();
+                endpoint.WaitForRequests();
+                Assert(queue.Snapshot().Count == 1, "redirected POST remains pending");
+                Assert(login.Requests.Count == 0, "collector does not follow redirect to login page");
+            }
+        });
+    }
+
     private static void NoBearerWhenEmpty()
     {
         InTempDirectory(delegate(string directory)
@@ -473,6 +515,69 @@ internal static class CollectorTests
         });
     }
 
+    private static void SecondLaunchFailsClearly()
+    {
+        InTempDirectory(delegate(string directory)
+        {
+            string source = Environment.GetEnvironmentVariable("FPT_TOOL_DIR");
+            string target = Path.Combine(directory, "repo", "tools", "flying-probe-collector");
+            Directory.CreateDirectory(target);
+            foreach (string file in Directory.GetFiles(source)) File.Copy(file, Path.Combine(target, Path.GetFileName(file)));
+            RunBuild(Path.Combine(target, "build.cmd"), directory);
+            string release = Path.Combine(directory, "repo", "outputs", "flying-probe-collector");
+            string input = Path.Combine(directory, "source");
+            Directory.CreateDirectory(input);
+            File.WriteAllText(Path.Combine(release, "FlyingProbeCollector.ini"),
+                "SourceRoot=" + input + "\r\nScanIntervalSeconds=1\r\nQmsBaseUrl=http://127.0.0.1:1\r\n" +
+                "GatewayToken=test-token\r\nQueueFile=.\\data\\pending.json\r\n" +
+                "CheckpointFile=.\\data\\scan.json\r\nLogFile=.\\logs\\collector.log\r\n");
+            string exe = Path.Combine(release, "FlyingProbeCollector.exe");
+            ProcessStartInfo start = new ProcessStartInfo(exe);
+            start.WorkingDirectory = release;
+            start.UseShellExecute = false;
+            start.CreateNoWindow = true;
+            using (Process first = Process.Start(start))
+            {
+                try
+                {
+                    string log = Path.Combine(release, "logs", "collector.log");
+                    DateTime deadline = DateTime.UtcNow.AddSeconds(5);
+                    while (!File.Exists(log) && DateTime.UtcNow < deadline) Thread.Sleep(50);
+                    Assert(File.Exists(log) && !first.HasExited, "first collector owns storage");
+                    ProcessStartInfo secondStart = new ProcessStartInfo(exe);
+                    secondStart.WorkingDirectory = release;
+                    secondStart.UseShellExecute = false;
+                    secondStart.CreateNoWindow = true;
+                    secondStart.RedirectStandardError = true;
+                    using (Process second = Process.Start(secondStart))
+                    {
+                        try
+                        {
+                            Assert(second.WaitForExit(1500), "second collector exits promptly");
+                            Assert(second.ExitCode != 0, "second collector fails");
+                            Assert(second.StandardError.ReadToEnd().Contains("already in use"), "second collector explains state ownership");
+                        }
+                        finally { if (!second.HasExited) { second.Kill(); second.WaitForExit(5000); } }
+                    }
+                }
+                finally { if (!first.HasExited) { first.Kill(); first.WaitForExit(5000); } }
+            }
+        });
+    }
+
+    private static void ScanFailureStillAttemptsDelivery()
+    {
+        MethodInfo cycle = typeof(Program).GetMethod("RunCycle", BindingFlags.Static | BindingFlags.NonPublic | BindingFlags.Public);
+        Assert(cycle != null, "collector exposes a testable cycle boundary");
+        int attempts = 0;
+        List<string> messages = new List<string>();
+        Action scan = delegate { throw new IOException("sample scan failure"); };
+        Action send = delegate { attempts++; };
+        cycle.Invoke(null, new object[] { scan, send, (Action<string>)messages.Add });
+        Assert(attempts == 1, "pending delivery runs after scan failure");
+        Assert(messages.Count == 1 && messages[0].Contains("sample scan failure"), "scan failure logged");
+    }
+
     private static void RunBuild(string build, string workingDirectory)
     {
         ProcessStartInfo start = new ProcessStartInfo("cmd.exe", "/c \"" + build + "\"");
@@ -511,6 +616,7 @@ internal static class CollectorTests
         private readonly List<CapturedRequest> requests = new List<CapturedRequest>();
         private Exception failure;
         public string BaseUrl { get; private set; }
+        public string RedirectLocation { get; set; }
         public List<CapturedRequest> Requests { get { return requests; } }
 
         public HttpFixture(params int[] statuses)
@@ -553,7 +659,9 @@ internal static class CollectorTests
                             int split = line.IndexOf(':');
                             if (split > 0) request.Headers[line.Substring(0, split)] = line.Substring(split + 1).Trim();
                         }
-                        int length = int.Parse(request.Headers["Content-Length"], CultureInfo.InvariantCulture);
+                        string lengthText;
+                        int length = request.Headers.TryGetValue("Content-Length", out lengthText) ?
+                            int.Parse(lengthText, CultureInfo.InvariantCulture) : 0;
                         char[] body = new char[length];
                         int read = 0;
                         while (read < length)
@@ -564,8 +672,10 @@ internal static class CollectorTests
                         }
                         request.Body = new string(body);
                         requests.Add(request);
+                        string location = status >= 300 && status < 400 && RedirectLocation != null ?
+                            "Location: " + RedirectLocation + "\r\n" : "";
                         byte[] response = Encoding.ASCII.GetBytes("HTTP/1.1 " + status.ToString(CultureInfo.InvariantCulture) +
-                            " Result\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+                            " Result\r\n" + location + "Content-Length: 0\r\nConnection: close\r\n\r\n");
                         stream.Write(response, 0, response.Length);
                     }
                 }
