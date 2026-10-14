@@ -1,6 +1,7 @@
 using System;
 using System.Collections;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Globalization;
 using System.IO;
 using System.Net;
@@ -34,6 +35,8 @@ internal static class CollectorTests
             Run("RejectOneContinueNext", RejectOneContinueNext);
             Run("NetworkFailureRetains", NetworkFailureRetains);
             Run("NoBearerWhenEmpty", NoBearerWhenEmpty);
+            Run("LoadSettingsRelativeToIni", LoadSettingsRelativeToIni);
+            Run("BuildReleaseLayout", BuildReleaseLayout);
             Console.WriteLine("Passed " + passed.ToString(CultureInfo.InvariantCulture) + " test(s).");
             return 0;
         }
@@ -410,6 +413,87 @@ internal static class CollectorTests
         item["deviceTime"] = "2026-10-14T09:10:11";
         item["eventType"] = "FLYING_PROBE_TEST_COUNTERS";
         return item;
+    }
+
+    private static void LoadSettingsRelativeToIni()
+    {
+        InTempDirectory(delegate(string directory)
+        {
+            string configDir = Path.Combine(directory, "config");
+            string otherDir = Path.Combine(directory, "other");
+            Directory.CreateDirectory(configDir);
+            Directory.CreateDirectory(otherDir);
+            string config = Path.Combine(configDir, "FlyingProbeCollector.ini");
+            string valid = "ScanIntervalSeconds=15\r\nQmsBaseUrl=http://127.0.0.1:8080\r\n" +
+                "GatewayToken=test-token\r\nBearerToken=\r\nRequestTimeoutSeconds=5\r\n" +
+                "QueueFile=.\\state\\pending.json\r\nCheckpointFile=.\\state\\scan.json\r\nLogFile=.\\logs\\collector.log\r\n";
+            File.WriteAllText(config, valid);
+            string prior = Environment.CurrentDirectory;
+            try
+            {
+                Environment.CurrentDirectory = otherDir;
+                Settings settings = Settings.Load(config);
+                Assert(settings.SourceRoot == @"\\Scbgx\数字化\飞针机", "default UNC source root");
+                Assert(settings.ScanIntervalSeconds == 15 && settings.RequestTimeoutSeconds == 5, "interval and timeout settings");
+                Assert(settings.QueueFile == Path.GetFullPath(Path.Combine(configDir, "state", "pending.json")), "queue path relative to INI");
+                Assert(settings.CheckpointFile == Path.GetFullPath(Path.Combine(configDir, "state", "scan.json")), "checkpoint path relative to INI");
+                Assert(settings.LogFile == Path.GetFullPath(Path.Combine(configDir, "logs", "collector.log")), "log path relative to INI");
+                File.WriteAllText(config, valid.Replace("GatewayToken=test-token", "GatewayToken=REPLACE_WITH_QMS_GATEWAY_TOKEN"));
+                AssertThrowsArgument(delegate { Settings.Load(config); }, "placeholder gateway token rejected");
+                File.WriteAllText(config, valid.Replace("QmsBaseUrl=http://127.0.0.1:8080", "QmsBaseUrl="));
+                AssertThrowsArgument(delegate { Settings.Load(config); }, "missing QMS URL rejected");
+            }
+            finally { Environment.CurrentDirectory = prior; }
+        });
+    }
+
+    private static void BuildReleaseLayout()
+    {
+        InTempDirectory(delegate(string directory)
+        {
+            string source = Environment.GetEnvironmentVariable("FPT_TOOL_DIR");
+            Assert(!string.IsNullOrEmpty(source), "test runner provides tool source path");
+            string target = Path.Combine(directory, "repo", "tools", "flying-probe-collector");
+            Directory.CreateDirectory(target);
+            foreach (string file in Directory.GetFiles(source))
+            {
+                File.Copy(file, Path.Combine(target, Path.GetFileName(file)));
+            }
+            string build = Path.Combine(target, "build.cmd");
+            string release = Path.Combine(directory, "repo", "outputs", "flying-probe-collector");
+            RunBuild(build, directory);
+            Assert(File.Exists(Path.Combine(release, "FlyingProbeCollector.exe")), "independent EXE released");
+            Assert(File.Exists(Path.Combine(release, "FlyingProbeCollector.ini")), "default INI released");
+            Assert(File.Exists(Path.Combine(release, "start-collector.cmd")), "launcher released");
+            Assert(File.Exists(Path.Combine(release, "README.md")), "operating guide released");
+            string siteConfig = Path.Combine(release, "FlyingProbeCollector.ini");
+            File.WriteAllText(siteConfig, "QmsBaseUrl=site-value\r\n");
+            RunBuild(build, directory);
+            Assert(File.ReadAllText(siteConfig) == "QmsBaseUrl=site-value\r\n", "rebuild preserves site INI");
+        });
+    }
+
+    private static void RunBuild(string build, string workingDirectory)
+    {
+        ProcessStartInfo start = new ProcessStartInfo("cmd.exe", "/c \"" + build + "\"");
+        start.WorkingDirectory = workingDirectory;
+        start.UseShellExecute = false;
+        start.RedirectStandardOutput = true;
+        start.RedirectStandardError = true;
+        using (Process process = Process.Start(start))
+        {
+            string output = process.StandardOutput.ReadToEnd();
+            string error = process.StandardError.ReadToEnd();
+            Assert(process.WaitForExit(30000), "build completes in 30 seconds");
+            Assert(process.ExitCode == 0, "build exit 0: " + output + error);
+        }
+    }
+
+    private static void AssertThrowsArgument(Action action, string description)
+    {
+        try { action(); }
+        catch (ArgumentException) { return; }
+        throw new Exception("Expected ArgumentException: " + description);
     }
 
     private sealed class CapturedRequest
