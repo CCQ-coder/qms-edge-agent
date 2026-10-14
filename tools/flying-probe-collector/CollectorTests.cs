@@ -18,6 +18,12 @@ internal static class CollectorTests
             Run("RecoverCheckpoint", RecoverCheckpoint);
             Run("RejectCorruptStores", RejectCorruptStores);
             Run("FailedWriteKeepsMemory", FailedWriteKeepsMemory);
+            Run("FirstScanWaitsForStability", FirstScanWaitsForStability);
+            Run("UpdatesCreateOneNewEvent", UpdatesCreateOneNewEvent);
+            Run("IgnoreNestedAndNonTxt", IgnoreNestedAndNonTxt);
+            Run("RetryInvalidOrChangingFile", RetryInvalidOrChangingFile);
+            Run("MetadataChangedAfterRead", MetadataChangedAfterRead);
+            Run("MissingRootKeepsState", MissingRootKeepsState);
             Console.WriteLine("Passed " + passed.ToString(CultureInfo.InvariantCulture) + " test(s).");
             return 0;
         }
@@ -164,6 +170,152 @@ internal static class CollectorTests
             AssertThrowsAny(delegate { checkpoints.Record("FPT-01/MAT-1.txt", "R-1"); }, "checkpoint write failure");
             Assert(queue.Snapshot().Count == 0, "failed enqueue leaves memory unchanged");
             Assert(!checkpoints.Contains("FPT-01/MAT-1.txt", "R-1"), "failed checkpoint leaves memory unchanged");
+        });
+    }
+
+    private static void FirstScanWaitsForStability()
+    {
+        InTempDirectory(delegate(string directory)
+        {
+            string root = Path.Combine(directory, "source");
+            string device = Path.Combine(root, "FPT-01");
+            Directory.CreateDirectory(device);
+            string file = Path.Combine(device, "MAT-1.txt");
+            File.WriteAllText(file, "Test_Counters 2 2 0 01:27:09");
+            DateTime created = new DateTime(2026, 10, 14, 8, 0, 0, DateTimeKind.Local);
+            DateTime updated = new DateTime(2026, 10, 14, 9, 10, 11, DateTimeKind.Local);
+            File.SetCreationTime(file, created);
+            File.SetLastWriteTime(file, updated);
+            PendingEventStore queue = new PendingEventStore(Path.Combine(directory, "pending.json"));
+            ScanCheckpointStore state = new ScanCheckpointStore(Path.Combine(directory, "scan.json"));
+            ProbeScanner scanner = new ProbeScanner(root, queue, state, delegate(string message) { });
+            scanner.ScanOnce();
+            Assert(queue.Snapshot().Count == 0, "first observation is not queued");
+            scanner.ScanOnce();
+            Assert(queue.Snapshot().Count == 1, "stable file queued once");
+            Dictionary<string, object> item = queue.Snapshot()[0];
+            Assert(Text(item, "machineName") == "FPT-01", "directory maps to machine");
+            Assert(Text(item, "materialNo") == "MAT-1", "stem maps to material");
+            Assert(Text(item, "deviceTime") == "2026-10-14T09:10:11", "modification time maps to device time");
+            Dictionary<string, object> attributes = (Dictionary<string, object>)item["attributes"];
+            Assert(Text(attributes, "startTime") == "2026-10-14T08:00:00", "creation time maps to start time");
+            Assert(state.Contains("FPT-01/MAT-1.txt", Text(item, "recordNo")), "checkpoint after queue");
+        });
+    }
+
+    private static void UpdatesCreateOneNewEvent()
+    {
+        InTempDirectory(delegate(string directory)
+        {
+            string root = Path.Combine(directory, "source");
+            string device = Path.Combine(root, "FPT-01");
+            Directory.CreateDirectory(device);
+            string file = Path.Combine(device, "MAT-1.txt");
+            File.WriteAllText(file, "Test_Counters 2 2 0 01:27:09");
+            File.SetLastWriteTime(file, new DateTime(2026, 10, 14, 9, 10, 11));
+            string queuePath = Path.Combine(directory, "pending.json");
+            string statePath = Path.Combine(directory, "scan.json");
+            PendingEventStore queue = new PendingEventStore(queuePath);
+            ProbeScanner scanner = new ProbeScanner(root, queue, new ScanCheckpointStore(statePath), delegate(string message) { });
+            scanner.ScanOnce();
+            scanner.ScanOnce();
+            string firstRecord = Text(queue.Snapshot()[0], "recordNo");
+            File.WriteAllText(file, "Test_Counters 3 2 1 01:28:00");
+            File.SetLastWriteTime(file, new DateTime(2026, 10, 14, 9, 12, 0));
+            scanner.ScanOnce();
+            Assert(queue.Snapshot().Count == 1, "changed file must stabilize");
+            scanner.ScanOnce();
+            Assert(queue.Snapshot().Count == 2, "updated snapshot queued once");
+            Assert(firstRecord != Text(queue.Snapshot()[1], "recordNo"), "updated snapshot has new record number");
+            scanner.ScanOnce();
+            Assert(queue.Snapshot().Count == 2, "unchanged file not requeued");
+            ProbeScanner restarted = new ProbeScanner(root, new PendingEventStore(queuePath), new ScanCheckpointStore(statePath), delegate(string message) { });
+            restarted.ScanOnce();
+            restarted.ScanOnce();
+            Assert(new PendingEventStore(queuePath).Snapshot().Count == 2, "restart does not requeue current snapshot");
+        });
+    }
+
+    private static void IgnoreNestedAndNonTxt()
+    {
+        InTempDirectory(delegate(string directory)
+        {
+            string root = Path.Combine(directory, "source");
+            string device = Path.Combine(root, "FPT-01");
+            string nested = Path.Combine(device, "nested");
+            Directory.CreateDirectory(nested);
+            File.WriteAllText(Path.Combine(root, "root.txt"), "Test_Counters 9 9 0 01:00:00");
+            File.WriteAllText(Path.Combine(device, "notes.csv"), "Test_Counters 9 9 0 01:00:00");
+            File.WriteAllText(Path.Combine(nested, "nested.txt"), "Test_Counters 9 9 0 01:00:00");
+            File.WriteAllText(Path.Combine(device, "MAT-1.TXT"), "Test_Counters 2 2 0 01:27:09");
+            PendingEventStore queue = new PendingEventStore(Path.Combine(directory, "pending.json"));
+            ProbeScanner scanner = new ProbeScanner(root, queue, new ScanCheckpointStore(Path.Combine(directory, "scan.json")), delegate(string message) { });
+            scanner.ScanOnce();
+            scanner.ScanOnce();
+            Assert(queue.Snapshot().Count == 1, "only immediate TXT under a device directory");
+            Assert(Text(queue.Snapshot()[0], "materialNo") == "MAT-1", "uppercase TXT extension accepted");
+        });
+    }
+
+    private static void RetryInvalidOrChangingFile()
+    {
+        InTempDirectory(delegate(string directory)
+        {
+            string root = Path.Combine(directory, "source");
+            string device = Path.Combine(root, "FPT-01");
+            Directory.CreateDirectory(device);
+            string file = Path.Combine(device, "MAT-1.txt");
+            File.WriteAllText(file, "Test_Counters 2 2 0");
+            PendingEventStore queue = new PendingEventStore(Path.Combine(directory, "pending.json"));
+            ProbeScanner scanner = new ProbeScanner(root, queue, new ScanCheckpointStore(Path.Combine(directory, "scan.json")), delegate(string message) { });
+            scanner.ScanOnce();
+            scanner.ScanOnce();
+            Assert(queue.Snapshot().Count == 0, "invalid file not queued");
+            File.WriteAllText(file, "Test_Counters 2 2 0 01:27:09");
+            File.SetLastWriteTime(file, DateTime.Now.AddMinutes(2));
+            scanner.ScanOnce();
+            Assert(queue.Snapshot().Count == 0, "change between scans not queued");
+            scanner.ScanOnce();
+            Assert(queue.Snapshot().Count == 1, "corrected stable file retried");
+        });
+    }
+
+    private static void MetadataChangedAfterRead()
+    {
+        InTempDirectory(delegate(string directory)
+        {
+            string file = Path.Combine(directory, "MAT-1.txt");
+            File.WriteAllText(file, "Test_Counters 2 2 0 01:27:09");
+            FileInfo info = new FileInfo(file);
+            long oldLength = info.Length;
+            DateTime oldWriteUtc = info.LastWriteTimeUtc;
+            File.AppendAllText(file, "\r\nWant_Ext_Resist_Test 0 30.00 5.00");
+            Assert(!ProbeScanner.MetadataUnchanged(info, oldLength, oldWriteUtc), "post-read metadata change detected");
+        });
+    }
+
+    private static void MissingRootKeepsState()
+    {
+        InTempDirectory(delegate(string directory)
+        {
+            string root = Path.Combine(directory, "missing-source");
+            string queuePath = Path.Combine(directory, "pending.json");
+            string statePath = Path.Combine(directory, "scan.json");
+            PendingEventStore queue = new PendingEventStore(queuePath);
+            Dictionary<string, object> old = new Dictionary<string, object>();
+            old["recordNo"] = "R-old";
+            queue.Enqueue(old);
+            ScanCheckpointStore state = new ScanCheckpointStore(statePath);
+            state.Record("FPT-old/OLD.txt", "R-old");
+            ProbeScanner scanner = new ProbeScanner(root, queue, state, delegate(string message) { });
+            scanner.ScanOnce();
+            Assert(queue.Snapshot().Count == 1 && state.Contains("FPT-old/OLD.txt", "R-old"), "missing share preserves state");
+            string device = Path.Combine(root, "FPT-01");
+            Directory.CreateDirectory(device);
+            File.WriteAllText(Path.Combine(device, "MAT-1.txt"), "Test_Counters 2 2 0 01:27:09");
+            scanner.ScanOnce();
+            scanner.ScanOnce();
+            Assert(queue.Snapshot().Count == 2, "scanning resumes after source returns");
         });
     }
 
