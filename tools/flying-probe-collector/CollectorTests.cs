@@ -1,7 +1,13 @@
 using System;
+using System.Collections;
 using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
+using System.Net;
+using System.Net.Sockets;
+using System.Text;
+using System.Threading;
+using System.Web.Script.Serialization;
 
 internal static class CollectorTests
 {
@@ -24,6 +30,10 @@ internal static class CollectorTests
             Run("RetryInvalidOrChangingFile", RetryInvalidOrChangingFile);
             Run("MetadataChangedAfterRead", MetadataChangedAfterRead);
             Run("MissingRootKeepsState", MissingRootKeepsState);
+            Run("AcceptedPostRemovesEvent", AcceptedPostRemovesEvent);
+            Run("RejectOneContinueNext", RejectOneContinueNext);
+            Run("NetworkFailureRetains", NetworkFailureRetains);
+            Run("NoBearerWhenEmpty", NoBearerWhenEmpty);
             Console.WriteLine("Passed " + passed.ToString(CultureInfo.InvariantCulture) + " test(s).");
             return 0;
         }
@@ -317,6 +327,173 @@ internal static class CollectorTests
             scanner.ScanOnce();
             Assert(queue.Snapshot().Count == 2, "scanning resumes after source returns");
         });
+    }
+
+    private static void AcceptedPostRemovesEvent()
+    {
+        InTempDirectory(delegate(string directory)
+        {
+            PendingEventStore queue = new PendingEventStore(Path.Combine(directory, "pending.json"));
+            queue.Enqueue(ProbeRecords.CreateEvent("FPT-01", "MAT-1", "FPT-01/MAT-1.txt",
+                new DateTime(2026, 10, 14, 8, 0, 0), new DateTime(2026, 10, 14, 9, 10, 11),
+                ProbeRecords.Parse("Test_Counters 2 2 0 01:27:09")));
+            using (HttpFixture server = new HttpFixture(204))
+            {
+                List<string> messages = new List<string>();
+                new QmsSender(server.BaseUrl, "gateway-secret", "bearer-secret", 2, queue, messages.Add).SendPending();
+                if (queue.Snapshot().Count != 0) throw new Exception("QMS sender did not clear accepted event: " + string.Join(" | ", messages.ToArray()));
+                server.WaitForRequests();
+                Assert(queue.Snapshot().Count == 0, "HTTP 204 removes event");
+                CapturedRequest request = server.Requests[0];
+                Assert(request.FirstLine == "POST /api/v1/equipment/telemetry HTTP/1.1", "telemetry endpoint and method");
+                Assert(request.Headers["X-Gateway-Token"] == "gateway-secret", "gateway token header");
+                Assert(request.Headers["Authorization"] == "Bearer bearer-secret", "bearer header");
+                Dictionary<string, object> payload = new JavaScriptSerializer().DeserializeObject(request.Body) as Dictionary<string, object>;
+                IList events = payload == null ? null : payload["events"] as IList;
+                Assert(events != null && events.Count == 1, "one event in wrapper");
+                Dictionary<string, object> item = events[0] as Dictionary<string, object>;
+                Assert(item != null && Text(item, "machineName") == "FPT-01" && (int)item["machiningCount"] == 2, "QMS event payload");
+            }
+        });
+    }
+
+    private static void RejectOneContinueNext()
+    {
+        InTempDirectory(delegate(string directory)
+        {
+            PendingEventStore queue = new PendingEventStore(Path.Combine(directory, "pending.json"));
+            queue.Enqueue(EventWithRecord("R-1"));
+            queue.Enqueue(EventWithRecord("R-2"));
+            using (HttpFixture server = new HttpFixture(400, 200))
+            {
+                new QmsSender(server.BaseUrl, "gateway-secret", "", 2, queue, delegate(string message) { }).SendPending();
+                server.WaitForRequests();
+                Assert(server.Requests.Count == 2, "second event sent after first rejected");
+                Assert(queue.Snapshot().Count == 1 && Text(queue.Snapshot()[0], "recordNo") == "R-1", "only rejected event retained");
+            }
+        });
+    }
+
+    private static void NetworkFailureRetains()
+    {
+        InTempDirectory(delegate(string directory)
+        {
+            PendingEventStore queue = new PendingEventStore(Path.Combine(directory, "pending.json"));
+            queue.Enqueue(EventWithRecord("R-1"));
+            List<string> messages = new List<string>();
+            new QmsSender("http://127.0.0.1:1", "gateway-secret", "bearer-secret", 1, queue, messages.Add).SendPending();
+            Assert(queue.Snapshot().Count == 1, "unreachable QMS retains event");
+            Assert(messages.Count > 0 && !messages[0].Contains("gateway-secret") && !messages[0].Contains("bearer-secret"), "failure log hides tokens");
+        });
+    }
+
+    private static void NoBearerWhenEmpty()
+    {
+        InTempDirectory(delegate(string directory)
+        {
+            PendingEventStore queue = new PendingEventStore(Path.Combine(directory, "pending.json"));
+            queue.Enqueue(EventWithRecord("R-1"));
+            using (HttpFixture server = new HttpFixture(200))
+            {
+                new QmsSender(server.BaseUrl, "gateway-secret", "", 2, queue, delegate(string message) { }).SendPending();
+                server.WaitForRequests();
+                Assert(!server.Requests[0].Headers.ContainsKey("Authorization"), "blank bearer omits Authorization");
+            }
+        });
+    }
+
+    private static Dictionary<string, object> EventWithRecord(string recordNo)
+    {
+        Dictionary<string, object> item = new Dictionary<string, object>();
+        item["recordNo"] = recordNo;
+        item["machineName"] = "FPT-01";
+        item["deviceTime"] = "2026-10-14T09:10:11";
+        item["eventType"] = "FLYING_PROBE_TEST_COUNTERS";
+        return item;
+    }
+
+    private sealed class CapturedRequest
+    {
+        public string FirstLine;
+        public Dictionary<string, string> Headers;
+        public string Body;
+    }
+
+    private sealed class HttpFixture : IDisposable
+    {
+        private readonly TcpListener listener;
+        private readonly Thread thread;
+        private readonly int[] statuses;
+        private readonly List<CapturedRequest> requests = new List<CapturedRequest>();
+        private Exception failure;
+        public string BaseUrl { get; private set; }
+        public List<CapturedRequest> Requests { get { return requests; } }
+
+        public HttpFixture(params int[] statuses)
+        {
+            this.statuses = statuses;
+            listener = new TcpListener(IPAddress.Loopback, 0);
+            listener.Start();
+            BaseUrl = "http://127.0.0.1:" + ((IPEndPoint)listener.LocalEndpoint).Port.ToString(CultureInfo.InvariantCulture);
+            thread = new Thread(Run);
+            thread.IsBackground = true;
+            thread.Start();
+        }
+
+        public void WaitForRequests()
+        {
+            if (!thread.Join(5000)) throw new Exception("HTTP fixture timed out; captured=" + requests.Count.ToString(CultureInfo.InvariantCulture) +
+                "; failure=" + (failure == null ? "none" : failure.ToString()));
+            if (failure != null) throw new Exception("HTTP fixture failed", failure);
+            Assert(requests.Count == statuses.Length, "expected HTTP request count");
+        }
+
+        private void Run()
+        {
+            try
+            {
+                foreach (int status in statuses)
+                {
+                    using (TcpClient client = listener.AcceptTcpClient())
+                    using (NetworkStream stream = client.GetStream())
+                    {
+                        client.ReceiveTimeout = 5000;
+                        stream.ReadTimeout = 5000;
+                        StreamReader reader = new StreamReader(stream, Encoding.UTF8);
+                        CapturedRequest request = new CapturedRequest();
+                        request.FirstLine = reader.ReadLine();
+                        request.Headers = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+                        string line;
+                        while (!string.IsNullOrEmpty(line = reader.ReadLine()))
+                        {
+                            int split = line.IndexOf(':');
+                            if (split > 0) request.Headers[line.Substring(0, split)] = line.Substring(split + 1).Trim();
+                        }
+                        int length = int.Parse(request.Headers["Content-Length"], CultureInfo.InvariantCulture);
+                        char[] body = new char[length];
+                        int read = 0;
+                        while (read < length)
+                        {
+                            int count = reader.Read(body, read, length - read);
+                            if (count == 0) throw new IOException("HTTP request ended before body.");
+                            read += count;
+                        }
+                        request.Body = new string(body);
+                        requests.Add(request);
+                        byte[] response = Encoding.ASCII.GetBytes("HTTP/1.1 " + status.ToString(CultureInfo.InvariantCulture) +
+                            " Result\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+                        stream.Write(response, 0, response.Length);
+                    }
+                }
+            }
+            catch (Exception error) { failure = error; }
+        }
+
+        public void Dispose()
+        {
+            listener.Stop();
+            thread.Join(1000);
+        }
     }
 
     private static void InTempDirectory(Action<string> test)
