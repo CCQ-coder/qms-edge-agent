@@ -25,7 +25,7 @@ internal sealed class CollectorForm : Form
     private readonly Label status = new Label { Name = "StatusLabel", AutoSize = true, Text = "待配置" };
     private readonly Label pending = new Label { Text = "待发送: 0", AutoSize = true };
     private readonly Label lastSuccess = new Label { Text = "最近成功: 暂无", AutoSize = true };
-    private readonly Label lastError = new Label { Text = "最近错误: 暂无", AutoSize = true };
+    private readonly Label lastError = new Label { Name = "LastErrorLabel", Text = "最近错误: 暂无", AutoSize = true };
     private bool closingReady;
     private bool closingRequested;
     private bool stopping;
@@ -163,10 +163,33 @@ internal sealed class CollectorForm : Form
                         if (record.Stage == "success") lastSuccess.Text = "最近成功: " + record.Time.ToString("yyyy-MM-dd HH:mm:ss");
                         if (record.Stage == "failed") lastError.Text = "最近错误: " + record.Time.ToString("HH:mm:ss") + " HTTP " + record.HttpStatus;
                     });
-                }, delegate(int count) { Post(delegate { pending.Text = "待发送: " + count.ToString(CultureInfo.InvariantCulture); }); });
+                }, delegate(int count) { Post(delegate { pending.Text = "待发送: " + count.ToString(CultureInfo.InvariantCulture); }); },
+                delegate(CollectorNoticeKind notice)
+                {
+                    Post(delegate
+                    {
+                        if (stopping || closingRequested) return;
+                        if (notice == CollectorNoticeKind.ScanError)
+                        { status.Text = "运行中 · 扫描异常，等待重试"; lastError.Text = "最近错误: 扫描或本地历史写入失败"; }
+                        else if (notice == CollectorNoticeKind.DeliveryError)
+                        { status.Text = "运行中 · 同步异常，等待重试"; lastError.Text = "最近错误: QMS 同步或本地历史写入失败"; }
+                        else status.Text = "运行中";
+                    });
+                });
             runtime.Start();
             ToggleInputs(false);
             status.Text = "运行中";
+            CollectorRuntime current = runtime;
+            current.Completion.ContinueWith(delegate(Task task)
+            {
+                Post(delegate
+                {
+                    if (runtime != current || stopping || closingRequested) return;
+                    ToggleInputs(true);
+                    status.Text = task.IsFaulted ? "已停止: 本地日志或存储故障" : "已停止";
+                    if (task.IsFaulted) lastError.Text = "最近错误: 后台线程退出 (" + task.Exception.GetBaseException().GetType().Name + ")";
+                });
+            });
         }
         catch (Exception error) { status.Text = "待配置: " + error.Message; lastError.Text = "最近错误: " + error.GetType().Name; }
     }
@@ -183,7 +206,7 @@ internal sealed class CollectorForm : Form
                 stopping = false;
                 if (closingRequested) { closingReady = true; Close(); return; }
                 ToggleInputs(true);
-                status.Text = task.IsFaulted ? "停止失败: " + task.Exception.GetBaseException().Message : "已停止";
+                status.Text = task.IsFaulted ? "停止失败: " + task.Exception.GetBaseException().GetType().Name : "已停止";
             });
         });
     }

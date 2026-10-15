@@ -4,6 +4,7 @@ using System.Globalization;
 using System.IO;
 using System.Net;
 using System.Text;
+using System.Threading;
 using System.Web.Script.Serialization;
 
 internal sealed class QmsSender
@@ -15,6 +16,7 @@ internal sealed class QmsSender
     private readonly PendingEventStore pending;
     private readonly Action<string> log;
     private readonly Action<SyncRecord> onRecord;
+    public bool LastSendFailed { get; private set; }
     private readonly JavaScriptSerializer serializer = new JavaScriptSerializer();
 
     public QmsSender(string baseUrl, string gatewayToken, string bearerToken, int timeoutSeconds,
@@ -42,26 +44,39 @@ internal sealed class QmsSender
 
     public void SendPending(Func<bool> shouldStop)
     {
+        LastSendFailed = false;
         foreach (Dictionary<string, object> item in pending.Snapshot())
         {
             if (shouldStop()) break;
             string recordNo = (string)item["recordNo"];
+            int status = 0;
+            string detail;
             try
             {
-                int status;
-                string response = Upload(item, out status);
-                Record("success", item, status, response);
+                detail = Upload(item, out status);
             }
             catch (WebException error)
             {
-                HttpWebResponse response = error.Response as HttpWebResponse;
-                int status = response == null ? 0 : (int)response.StatusCode;
-                string detail = response == null ? error.Status.ToString() : ReadResponse(response);
-                if (response != null) response.Close();
-                Record("failed", item, status, detail);
-                Log("QMS delivery failed for " + recordNo + ": " + (status == 0 ? detail : status.ToString(CultureInfo.InvariantCulture)));
+                LastSendFailed = true;
+                Record("failed", item, 0, error.Status.ToString());
+                Log("QMS delivery failed for " + recordNo + ": " + error.Status);
                 continue;
             }
+            catch (IOException error)
+            {
+                LastSendFailed = true;
+                Record("failed", item, status, error.GetType().Name);
+                Log("QMS response failed for " + recordNo + ": " + error.GetType().Name);
+                continue;
+            }
+            if (status < 200 || status >= 300)
+            {
+                LastSendFailed = true;
+                Record("failed", item, status, detail);
+                Log("QMS delivery failed for " + recordNo + ": " + status.ToString(CultureInfo.InvariantCulture));
+                continue;
+            }
+            Record("success", item, status, detail);
             pending.Remove(recordNo);
             Log("QMS accepted " + recordNo);
         }
@@ -84,16 +99,22 @@ internal sealed class QmsSender
         request.Headers["X-Gateway-Token"] = gatewayToken;
         if (!string.IsNullOrEmpty(bearerToken)) request.Headers[HttpRequestHeader.Authorization] = "Bearer " + bearerToken;
         request.ContentLength = bytes.Length;
-        using (Stream output = request.GetRequestStream()) output.Write(bytes, 0, bytes.Length);
-        HttpWebResponse response = (HttpWebResponse)request.GetResponse();
-        status = (int)response.StatusCode;
-        if ((int)response.StatusCode < 200 || (int)response.StatusCode >= 300)
+        using (Timer deadline = new Timer(delegate { request.Abort(); }, null, timeoutSeconds * 1000, Timeout.Infinite))
         {
-            throw new WebException("QMS returned a non-success response.", null, WebExceptionStatus.ProtocolError, response);
+            using (Stream output = request.GetRequestStream()) output.Write(bytes, 0, bytes.Length);
+            HttpWebResponse response;
+            try { response = (HttpWebResponse)request.GetResponse(); }
+            catch (WebException error)
+            {
+                response = error.Response as HttpWebResponse;
+                if (response == null) throw;
+            }
+            using (response)
+            {
+                status = (int)response.StatusCode;
+                return ReadResponse(response);
+            }
         }
-        string detail = ReadResponse(response);
-        response.Close();
-        return detail;
     }
 
     private void Record(string stage, Dictionary<string, object> item, int status, string response)

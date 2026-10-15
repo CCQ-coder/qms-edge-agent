@@ -90,10 +90,11 @@ internal sealed class SyncHistory
     public IList<SyncRecord> ReadPage(DateTime day, int skip, int take, out int invalidLines)
     {
         if (skip < 0 || take < 1 || take > 500) throw new ArgumentOutOfRangeException("take");
+        if (skip > int.MaxValue - take) throw new ArgumentOutOfRangeException("skip");
         invalidLines = 0;
-        List<SyncRecord> rows = new List<SyncRecord>();
+        Queue<SyncRecord> window = new Queue<SyncRecord>();
         string path = Path.Combine(directory, day.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture) + ".jsonl");
-        if (!File.Exists(path)) return rows;
+        if (!File.Exists(path)) return new List<SyncRecord>();
         using (FileStream stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
         using (StreamReader reader = new StreamReader(stream, Encoding.UTF8))
         {
@@ -105,15 +106,17 @@ internal sealed class SyncHistory
                     SyncRecord record = serializer.Deserialize<SyncRecord>(line);
                     if (record == null || record.Time == default(DateTime) || string.IsNullOrEmpty(record.Stage))
                         throw new InvalidDataException("Invalid history row.");
-                    rows.Add(record);
+                    window.Enqueue(record);
+                    if (window.Count > skip + take) window.Dequeue();
                 }
                 catch (Exception error)
                 {
-                    if (!(error is ArgumentException || error is InvalidOperationException || error is InvalidDataException)) throw;
+                    if (error is OutOfMemoryException) throw;
                     invalidLines++;
                 }
             }
         }
+        List<SyncRecord> rows = new List<SyncRecord>(window);
         rows.Reverse();
         if (skip >= rows.Count) return new List<SyncRecord>();
         return rows.GetRange(skip, Math.Min(take, rows.Count - skip));

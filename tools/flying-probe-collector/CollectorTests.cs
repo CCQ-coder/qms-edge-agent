@@ -45,6 +45,7 @@ internal static class CollectorTests
             Run("HistoryNeverContainsTokens", HistoryNeverContainsTokens);
             Run("RuntimeStartStopReleasesLock", RuntimeStartStopReleasesLock);
             Run("StopDoesNotSendNextPendingEvent", StopDoesNotSendNextPendingEvent);
+            Run("SlowResponseHonorsOverallTimeout", SlowResponseHonorsOverallTimeout);
             Run("SettingsDraftCanOpenPlaceholder", SettingsDraftCanOpenPlaceholder);
             Run("SavePreservesOtherEntries", SavePreservesOtherEntries);
             Run("BuildReleaseLayout", BuildReleaseLayout);
@@ -521,9 +522,12 @@ internal static class CollectorTests
             SyncHistory history = new SyncHistory(directory);
             history.Append(SyncRecord.FromEvent("queued", EventWithRecord("R-1"), 0, ""));
             File.AppendAllText(Path.Combine(directory, DateTime.Now.ToString("yyyy-MM-dd") + ".jsonl"), "{broken\n");
+            File.AppendAllText(Path.Combine(directory, DateTime.Now.ToString("yyyy-MM-dd") + ".jsonl"),
+                "{\"Time\":\"bad\",\"Stage\":\"failed\",\"Tested\":1}\n" +
+                "{\"Time\":\"2026-10-15T10:00:00\",\"Stage\":\"failed\",\"Tested\":2147483648}\n");
             int invalid;
             IList<SyncRecord> records = history.ReadPage(DateTime.Now, 0, 20, out invalid);
-            Assert(records.Count == 1 && invalid == 1, "damaged line is reported and valid row remains");
+            Assert(records.Count == 1 && invalid == 3, "damaged typed rows are counted and valid row remains");
         });
     }
 
@@ -598,6 +602,47 @@ internal static class CollectorTests
                 IList<Dictionary<string, object>> remaining = new PendingEventStore(settings.QueueFile).Snapshot();
                 Assert(remaining.Count == 1 && Text(remaining[0], "recordNo") == "R-2", "second event retained");
             }
+        });
+    }
+
+    private static void SlowResponseHonorsOverallTimeout()
+    {
+        InTempDirectory(delegate(string directory)
+        {
+            PendingEventStore queue = new PendingEventStore(Path.Combine(directory, "pending.json"));
+            queue.Enqueue(EventWithRecord("R-slow"));
+            TcpListener listener = new TcpListener(IPAddress.Loopback, 0);
+            listener.Start();
+            Thread server = new Thread(delegate()
+            {
+                try
+                {
+                    using (TcpClient client = listener.AcceptTcpClient())
+                    using (NetworkStream stream = client.GetStream())
+                    {
+                        byte[] headers = Encoding.ASCII.GetBytes("HTTP/1.1 200 OK\r\nContent-Length: 30\r\nConnection: close\r\n\r\n");
+                        stream.Write(headers, 0, headers.Length);
+                        for (int i = 0; i < 30; i++)
+                        {
+                            stream.WriteByte((byte)'x');
+                            Thread.Sleep(100);
+                        }
+                    }
+                }
+                catch (IOException) { }
+                catch (SocketException) { }
+            });
+            server.IsBackground = true; server.Start();
+            try
+            {
+                string url = "http://127.0.0.1:" + ((IPEndPoint)listener.LocalEndpoint).Port;
+                Stopwatch timer = Stopwatch.StartNew();
+                new QmsSender(url, "gateway-secret", "", 1, queue, delegate(string message) { }).SendPending();
+                timer.Stop();
+                Assert(timer.ElapsedMilliseconds < 2300, "whole response obeys request deadline");
+                Assert(queue.Snapshot().Count == 1, "timed-out response stays queued");
+            }
+            finally { listener.Stop(); server.Join(5000); }
         });
     }
 

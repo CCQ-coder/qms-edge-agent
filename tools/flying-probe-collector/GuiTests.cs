@@ -1,4 +1,5 @@
 using System;
+using System.Diagnostics;
 using System.IO;
 using System.Net;
 using System.Net.Sockets;
@@ -19,8 +20,12 @@ internal static class GuiTests
             SelectingRowShowsDetailsWithoutSecrets();
             PaginationKeepsRowsBounded();
             HistoryGridRemainsUsableAtDefaultSize();
+            RecentViewFollowsNewDay();
+            HistoryReadsOffUiThread();
+            SourceFailureAppearsInWindow();
+            WorkerFailureRestoresControls();
             ClosingWhileStoppingExits();
-            Console.WriteLine("PASS 8 GUI tests");
+            Console.WriteLine("PASS 12 GUI tests");
             return 0;
         }
         catch (Exception error) { Console.Error.WriteLine(error); return 1; }
@@ -92,14 +97,16 @@ internal static class GuiTests
             SyncRecord old = SyncRecord.FromEvent("success", Event("R-old"), 200, "ok");
             old.Time = DateTime.Today.AddDays(-1).AddHours(10);
             history.Append(old);
+            using (Form host = new Form())
             using (SyncHistoryView view = new SyncHistoryView(history))
             {
-                view.ShowDay(old.Time);
-                Assert(Find<DataGridView>(view, "HistoryGrid").Rows.Count == 1, "saved old-day record visible");
+                host.Controls.Add(view); host.Show(); view.ShowDay(old.Time);
+                WaitFor(delegate { return Find<DataGridView>(view, "HistoryGrid").Rows.Count == 1; }, "saved old-day record visible");
                 SyncRecord live = SyncRecord.FromEvent("success", Event("R-live"), 200, "ok");
                 history.Append(live);
                 view.ShowRecent(); view.AddLive(live);
-                Assert(Find<DataGridView>(view, "HistoryGrid").Rows.Count == 1, "live record visible");
+                WaitFor(delegate { return FirstRecordNo(view) == "R-live"; }, "live record visible");
+                host.Close();
             }
         });
     }
@@ -110,13 +117,17 @@ internal static class GuiTests
         {
             SyncHistory history = new SyncHistory(Path.Combine(Path.GetDirectoryName(path), "history"), "gateway-secret");
             history.Append(SyncRecord.FromEvent("failed", Event("R-1"), 500, "gateway-secret error"));
+            using (Form host = new Form())
             using (SyncHistoryView view = new SyncHistoryView(history))
             {
+                host.Controls.Add(view); host.Show();
                 view.ShowRecent();
+                WaitFor(delegate { return Find<DataGridView>(view, "HistoryGrid").Rows.Count == 1; }, "record loaded for detail");
                 Find<DataGridView>(view, "HistoryGrid").Rows[0].Selected = true;
                 string detail = Find<TextBox>(view, "RequestDetailBox").Text + Find<TextBox>(view, "ResponseDetailBox").Text;
                 Assert(detail.Contains("FPT-01") && detail.Contains("R-1"), "details include event");
                 Assert(!detail.Contains("gateway-secret"), "details hide token");
+                host.Close();
             }
         });
     }
@@ -127,13 +138,118 @@ internal static class GuiTests
         {
             SyncHistory history = new SyncHistory(Path.Combine(Path.GetDirectoryName(path), "history"));
             for (int i = 0; i < 105; i++) history.Append(SyncRecord.FromEvent("queued", Event("R-" + i), 0, ""));
+            using (Form host = new Form())
             using (SyncHistoryView view = new SyncHistoryView(history))
             {
+                host.Controls.Add(view); host.Show();
                 view.ShowRecent();
                 DataGridView grid = Find<DataGridView>(view, "HistoryGrid");
-                Assert(grid.Rows.Count == 100, "first page bounded");
+                WaitFor(delegate { return grid.Rows.Count == 100; }, "first page bounded");
                 Find<Button>(view, "OlderButton").PerformClick();
-                Assert(grid.Rows.Count == 5, "older page contains remaining records");
+                WaitFor(delegate { return grid.Rows.Count == 5; }, "older page contains remaining records");
+                host.Close();
+            }
+        });
+    }
+
+    private static void RecentViewFollowsNewDay()
+    {
+        WithConfig(delegate(string path)
+        {
+            SyncHistory history = new SyncHistory(Path.Combine(Path.GetDirectoryName(path), "history"));
+            SyncRecord old = SyncRecord.FromEvent("queued", Event("R-old"), 0, "");
+            old.Time = DateTime.Today.AddDays(-1).AddHours(10);
+            history.Append(old);
+            using (Form host = new Form())
+            using (SyncHistoryView view = new SyncHistoryView(history))
+            {
+                host.Controls.Add(view); host.Show();
+                WaitFor(delegate { return FirstRecordNo(view) == "R-old"; }, "old recent record initially visible");
+                SyncRecord live = SyncRecord.FromEvent("success", Event("R-today"), 204, "ok");
+                history.Append(live);
+                view.AddLive(live);
+                WaitFor(delegate { return FirstRecordNo(view) == "R-today"; }, "recent view follows new calendar day");
+                host.Close();
+            }
+        });
+    }
+
+    private static void HistoryReadsOffUiThread()
+    {
+        WithConfig(delegate(string path)
+        {
+            string directory = Path.Combine(Path.GetDirectoryName(path), "history");
+            SyncHistory history = new SyncHistory(directory);
+            using (Form host = new Form())
+            using (SyncHistoryView view = new SyncHistoryView(history))
+            {
+                host.Controls.Add(view); host.Show(); Application.DoEvents();
+                history.Append(SyncRecord.FromEvent("queued", Event("R-large"), 0, ""));
+                string file = Path.Combine(directory, DateTime.Today.ToString("yyyy-MM-dd") + ".jsonl");
+                string line = File.ReadAllText(file).Trim();
+                using (StreamWriter writer = new StreamWriter(file, false))
+                    for (int i = 0; i < 50000; i++) writer.WriteLine(line);
+                Stopwatch timer = Stopwatch.StartNew();
+                view.ShowDay(DateTime.Today);
+                timer.Stop();
+                Assert(timer.ElapsedMilliseconds < 300, "history page request does not block UI thread");
+                host.Close();
+            }
+        });
+    }
+
+    private static string FirstRecordNo(SyncHistoryView view)
+    {
+        DataGridView grid = Find<DataGridView>(view, "HistoryGrid");
+        return grid.Rows.Count == 0 ? "" : Convert.ToString(grid.Rows[0].Cells[8].Value);
+    }
+
+    private static void WaitFor(Func<bool> condition, string description)
+    {
+        DateTime deadline = DateTime.UtcNow.AddSeconds(8);
+        while (!condition() && DateTime.UtcNow < deadline) { Application.DoEvents(); Thread.Sleep(20); }
+        Assert(condition(), description);
+    }
+
+    private static void SourceFailureAppearsInWindow()
+    {
+        WithConfig(delegate(string path)
+        {
+            string ini = File.ReadAllText(path).Replace("REPLACE_WITH_QMS_GATEWAY_TOKEN", "real-gateway")
+                .Replace("SourceRoot=" + Path.Combine(Path.GetDirectoryName(path), "source"),
+                    "SourceRoot=" + Path.Combine(Path.GetDirectoryName(path), "missing-source"));
+            File.WriteAllText(path, ini);
+            using (CollectorForm form = new CollectorForm(path))
+            {
+                try
+                {
+                    form.Show();
+                    WaitFor(delegate { return Find<Label>(form, "StatusLabel").Text.Contains("重试"); },
+                        "source failure visible in status");
+                    Assert(Find<Label>(form, "LastErrorLabel").Text.Contains("扫描"), "source error visible in summary");
+                }
+                finally { form.Close(); WaitFor(delegate { return form.IsDisposed; }, "form closes after source failure"); }
+            }
+        });
+    }
+
+    private static void WorkerFailureRestoresControls()
+    {
+        WithConfig(delegate(string path)
+        {
+            string ini = File.ReadAllText(path).Replace("REPLACE_WITH_QMS_GATEWAY_TOKEN", "real-gateway")
+                .Replace("LogFile=.\\collector.log", "LogFile=.");
+            File.WriteAllText(path, ini);
+            using (CollectorForm form = new CollectorForm(path))
+            {
+                try
+                {
+                    form.Show();
+                    WaitFor(delegate { return Find<Label>(form, "StatusLabel").Text.Contains("已停止"); },
+                        "worker exit visible in status");
+                    Assert(Find<TextBox>(form, "GatewayTokenBox").Enabled, "controls restored after worker fault");
+                }
+                finally { form.Close(); WaitFor(delegate { return form.IsDisposed; }, "form closes after worker fault"); }
             }
         });
     }
@@ -224,7 +340,14 @@ internal static class GuiTests
                 "CheckpointFile=.\\checkpoint.json\r\nLogFile=.\\collector.log\r\n");
             test(path);
         }
-        finally { Directory.Delete(directory, true); }
+        finally
+        {
+            for (int attempt = 0; attempt < 50; attempt++)
+            {
+                try { Directory.Delete(directory, true); break; }
+                catch (IOException) { if (attempt == 49) throw; Thread.Sleep(20); }
+            }
+        }
     }
 
     private static T Find<T>(Control root, string name) where T : Control

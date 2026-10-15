@@ -10,6 +10,7 @@ internal sealed class ProbeScanner
     private readonly ScanCheckpointStore checkpoints;
     private readonly Action<string> log;
     private readonly Action<SyncRecord> onRecord;
+    public bool LastScanHadError { get; private set; }
     private readonly Dictionary<string, FileStamp> observed = new Dictionary<string, FileStamp>(StringComparer.OrdinalIgnoreCase);
 
     private struct FileStamp
@@ -35,6 +36,7 @@ internal sealed class ProbeScanner
 
     public void ScanOnce()
     {
+        LastScanHadError = false;
         string[] directories;
         try
         {
@@ -42,12 +44,12 @@ internal sealed class ProbeScanner
         }
         catch (IOException error)
         {
-            Log("Source directory unavailable: " + error.Message);
+            Issue("Source directory unavailable: " + error.Message);
             return;
         }
         catch (UnauthorizedAccessException error)
         {
-            Log("Source directory inaccessible: " + error.Message);
+            Issue("Source directory inaccessible: " + error.Message);
             return;
         }
 
@@ -60,21 +62,21 @@ internal sealed class ProbeScanner
             }
             catch (IOException error)
             {
-                Log("Device directory unavailable: " + directory + ": " + error.Message);
+                Issue("Device directory unavailable: " + directory + ": " + error.Message);
                 continue;
             }
             catch (UnauthorizedAccessException error)
             {
-                Log("Device directory inaccessible: " + directory + ": " + error.Message);
+                Issue("Device directory inaccessible: " + directory + ": " + error.Message);
                 continue;
             }
             foreach (string file in files)
             {
                 if (!string.Equals(Path.GetExtension(file), ".txt", StringComparison.OrdinalIgnoreCase)) continue;
                 try { ScanFile(directory, file); }
-                catch (IOException error) { Log("File unavailable: " + file + ": " + error.Message); }
-                catch (UnauthorizedAccessException error) { Log("File inaccessible: " + file + ": " + error.Message); }
-                catch (FormatException error) { Log("Invalid counters: " + file + ": " + error.Message); }
+                catch (IOException error) { Issue("File unavailable: " + file + ": " + error.Message); }
+                catch (UnauthorizedAccessException error) { Issue("File inaccessible: " + file + ": " + error.Message); }
+                catch (FormatException error) { Issue("Invalid counters: " + file + ": " + error.Message); }
             }
         }
     }
@@ -104,7 +106,7 @@ internal sealed class ProbeScanner
         if (onRecord != null)
         {
             try { onRecord(SyncRecord.FromEvent("queued", eventItem, 0, "")); }
-            catch (Exception error) { Log("History write failed for " + recordNo + ": " + error.GetType().Name); }
+            catch (Exception error) { Issue("History write failed for " + recordNo + ": " + error.GetType().Name); }
         }
         Log("Queued " + relativePath + " record=" + recordNo);
     }
@@ -118,5 +120,11 @@ internal sealed class ProbeScanner
     private void Log(string message)
     {
         if (log != null) log(message);
+    }
+
+    private void Issue(string message)
+    {
+        LastScanHadError = true;
+        Log(message);
     }
 }

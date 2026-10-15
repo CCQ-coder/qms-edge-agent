@@ -1,6 +1,8 @@
 using System;
+using System.Collections.Generic;
 using System.Drawing;
 using System.Globalization;
+using System.Threading.Tasks;
 using System.Windows.Forms;
 
 internal sealed class SyncHistoryView : UserControl
@@ -21,6 +23,15 @@ internal sealed class SyncHistoryView : UserControl
     private DateTime selectedDay;
     private int skip;
     private bool loading;
+    private bool followRecent;
+    private bool loadRunning;
+    private bool reloadRequested;
+
+    private sealed class PageResult
+    {
+        public IList<SyncRecord> Rows;
+        public int Invalid;
+    }
 
     public SyncHistoryView(SyncHistory history)
     {
@@ -36,6 +47,7 @@ internal sealed class SyncHistoryView : UserControl
 
     public void ShowDay(DateTime day)
     {
+        followRecent = false;
         selectedDay = day.Date;
         skip = 0;
         loading = true;
@@ -47,11 +59,26 @@ internal sealed class SyncHistoryView : UserControl
     public void ShowRecent()
     {
         ShowDay(history.LatestDay());
+        followRecent = true;
     }
 
     public void AddLive(SyncRecord record)
     {
+        if (followRecent && record.Time.Date > selectedDay)
+        {
+            selectedDay = record.Time.Date;
+            skip = 0;
+            loading = true;
+            dayPicker.Value = selectedDay;
+            loading = false;
+        }
         if (record.Time.Date == selectedDay && skip == 0) LoadPage();
+    }
+
+    protected override void OnHandleCreated(EventArgs e)
+    {
+        base.OnHandleCreated(e);
+        LoadPage();
     }
 
     private void BuildLayout()
@@ -92,10 +119,40 @@ internal sealed class SyncHistoryView : UserControl
 
     private void LoadPage()
     {
-        int invalid;
-        try
+        if (!IsHandleCreated || IsDisposed) return;
+        if (loadRunning) { reloadRequested = true; return; }
+        loadRunning = true;
+        DateTime day = selectedDay;
+        int offset = skip;
+        Task.Factory.StartNew(delegate
         {
-            var rows = history.ReadPage(selectedDay, skip, PageSize, out invalid);
+            int invalid;
+            return new PageResult { Rows = history.ReadPage(day, offset, PageSize, out invalid), Invalid = invalid };
+        }).ContinueWith(delegate(Task<PageResult> task)
+        {
+            if (IsDisposed || !IsHandleCreated) return;
+            try
+            {
+                BeginInvoke((Action)delegate
+                {
+                    if (IsDisposed) return;
+                    loadRunning = false;
+                    if (reloadRequested || day != selectedDay || offset != skip)
+                    {
+                        reloadRequested = false;
+                        LoadPage();
+                        return;
+                    }
+                    if (task.IsFaulted) { ShowReadError(task.Exception.GetBaseException()); return; }
+                    ApplyPage(task.Result.Rows, task.Result.Invalid);
+                });
+            }
+            catch (InvalidOperationException) { }
+        });
+    }
+
+    private void ApplyPage(IList<SyncRecord> rows, int invalid)
+    {
             grid.Rows.Clear();
             foreach (SyncRecord record in rows)
             {
@@ -109,12 +166,12 @@ internal sealed class SyncHistoryView : UserControl
                 (invalid > 0 ? " · 损坏记录 " + invalid.ToString(CultureInfo.InvariantCulture) + " 行" : "");
             if (grid.Rows.Count > 0) { grid.Rows[0].Selected = true; ShowSelected(); }
             else { request.Clear(); response.Clear(); }
-        }
-        catch (Exception error)
-        {
-            notice.Text = "读取历史失败: " + error.GetType().Name;
-            grid.Rows.Clear(); request.Clear(); response.Clear();
-        }
+    }
+
+    private void ShowReadError(Exception error)
+    {
+        notice.Text = "读取历史失败: " + error.GetType().Name;
+        grid.Rows.Clear(); request.Clear(); response.Clear();
     }
 
     private void ShowSelected()
