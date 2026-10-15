@@ -193,6 +193,7 @@ internal static class GuiTests
                 view.ShowDay(DateTime.Today);
                 timer.Stop();
                 Assert(timer.ElapsedMilliseconds < 300, "history page request does not block UI thread");
+                WaitFor(delegate { return FirstRecordNo(view) == "R-large"; }, "large history read finishes before cleanup");
                 host.Close();
             }
         });

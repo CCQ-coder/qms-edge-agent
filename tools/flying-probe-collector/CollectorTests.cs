@@ -40,6 +40,7 @@ internal static class CollectorTests
             Run("NoBearerWhenEmpty", NoBearerWhenEmpty);
             Run("LoadSettingsRelativeToIni", LoadSettingsRelativeToIni);
             Run("HistorySurvivesRestart", HistorySurvivesRestart);
+            Run("HistoryReadShowsUtcPlusEight", HistoryReadShowsUtcPlusEight);
             Run("MalformedHistoryLineIsReported", MalformedHistoryLineIsReported);
             Run("AcceptedWithoutHistoryStaysQueued", AcceptedWithoutHistoryStaysQueued);
             Run("HistoryNeverContainsTokens", HistoryNeverContainsTokens);
@@ -512,6 +513,21 @@ internal static class CollectorTests
             IList<SyncRecord> records = new SyncHistory(directory).ReadPage(DateTime.Now, 0, 20, out invalid);
             Assert(records.Count == 3 && invalid == 0, "history survives new instance");
             Assert(records[0].Stage == "success" && records[2].Stage == "queued", "newest history first");
+        });
+    }
+
+    private static void HistoryReadShowsUtcPlusEight()
+    {
+        InTempDirectory(delegate(string directory)
+        {
+            SyncRecord record = SyncRecord.FromEvent("success", EventWithRecord("R-1"), 200, "accepted");
+            record.Time = new DateTime(2026, 10, 15, 3, 53, 10, DateTimeKind.Utc);
+            new SyncHistory(directory).Append(record);
+            int invalid;
+            IList<SyncRecord> rows = new SyncHistory(directory).ReadPage(new DateTime(2026, 10, 15), 0, 10, out invalid);
+            Assert(rows.Count == 1 && invalid == 0, "saved UTC history row loads");
+            Assert(rows[0].Time == new DateTime(2026, 10, 15, 11, 53, 10) &&
+                rows[0].Time.Kind == DateTimeKind.Unspecified, "saved UTC history displays at UTC+8");
         });
     }
 

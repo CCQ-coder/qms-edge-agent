@@ -106,6 +106,8 @@ internal sealed class SyncHistory
                     SyncRecord record = serializer.Deserialize<SyncRecord>(line);
                     if (record == null || record.Time == default(DateTime) || string.IsNullOrEmpty(record.Stage))
                         throw new InvalidDataException("Invalid history row.");
+                    if (record.Time.Kind == DateTimeKind.Utc)
+                        record.Time = DateTime.SpecifyKind(record.Time.AddHours(8), DateTimeKind.Unspecified);
                     window.Enqueue(record);
                     if (window.Count > skip + take) window.Dequeue();
                 }
