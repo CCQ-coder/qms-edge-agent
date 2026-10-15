@@ -12,6 +12,8 @@ internal sealed class CollectorForm : Form
     private readonly string configPath;
     private SettingsDocument document;
     private CollectorRuntime runtime;
+    private SyncHistoryView historyView;
+    private GroupBox historyGroup;
     private readonly TextBox source = new TextBox { Name = "SourceRootBox" };
     private readonly TextBox url = new TextBox { Name = "QmsBaseUrlBox" };
     private readonly TextBox gateway = new TextBox { Name = "GatewayTokenBox", UseSystemPasswordChar = true };
@@ -42,6 +44,16 @@ internal sealed class CollectorForm : Form
         gateway.Text = document.Get("GatewayToken", "");
         bearer.Text = document.Get("BearerToken", "");
         interval.Text = document.Get("ScanIntervalSeconds", "30");
+        string queuePath;
+        try
+        {
+            string configured = document.Get("QueueFile", @".\data\pending-events.json");
+            queuePath = Path.GetFullPath(Path.IsPathRooted(configured) ? configured :
+                Path.Combine(Path.GetDirectoryName(this.configPath), configured));
+        }
+        catch (Exception) { queuePath = Path.Combine(Path.GetDirectoryName(this.configPath), "data", "pending-events.json"); }
+        historyView = new SyncHistoryView(new SyncHistory(Path.Combine(Path.GetDirectoryName(queuePath), "history")));
+        historyGroup.Controls.Add(historyView);
         save.Click += delegate { SaveConfiguration(); };
         start.Click += delegate { StartCollector(); };
         stop.Click += delegate { StopCollector(); };
@@ -105,9 +117,8 @@ internal sealed class CollectorForm : Form
         summary.Controls.Add(summaryFlow);
         layout.Controls.Add(summary, 0, 1);
 
-        GroupBox history = new GroupBox { Text = "同步记录", Dock = DockStyle.Fill, Padding = new Padding(10) };
-        history.Controls.Add(new Label { Text = "记录视图正在加载…", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleCenter });
-        layout.Controls.Add(history, 0, 2);
+        historyGroup = new GroupBox { Text = "同步记录", Dock = DockStyle.Fill, Padding = new Padding(10) };
+        layout.Controls.Add(historyGroup, 0, 2);
     }
 
     private static void AddSetting(TableLayoutPanel grid, int row, string caption, TextBox box)
@@ -146,6 +157,7 @@ internal sealed class CollectorForm : Form
                 {
                     Post(delegate
                     {
+                        historyView.AddLive(record);
                         if (record.Stage == "success") lastSuccess.Text = "最近成功: " + record.Time.ToString("yyyy-MM-dd HH:mm:ss");
                         if (record.Stage == "failed") lastError.Text = "最近错误: " + record.Time.ToString("HH:mm:ss") + " HTTP " + record.HttpStatus;
                     });

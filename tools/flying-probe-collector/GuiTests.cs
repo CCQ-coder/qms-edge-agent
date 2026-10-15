@@ -13,7 +13,10 @@ internal static class GuiTests
             InvalidConfigOpensWindow();
             MaskedTokensAndSave();
             StartStopKeepsUiResponsive();
-            Console.WriteLine("PASS 3 GUI tests");
+            HistoryViewShowsSavedAndLiveRecords();
+            SelectingRowShowsDetailsWithoutSecrets();
+            PaginationKeepsRowsBounded();
+            Console.WriteLine("PASS 6 GUI tests");
             return 0;
         }
         catch (Exception error) { Console.Error.WriteLine(error); return 1; }
@@ -74,6 +77,69 @@ internal static class GuiTests
                 form.Close();
             }
         });
+    }
+
+    private static void HistoryViewShowsSavedAndLiveRecords()
+    {
+        WithConfig(delegate(string path)
+        {
+            string directory = Path.Combine(Path.GetDirectoryName(path), "history");
+            SyncHistory history = new SyncHistory(directory);
+            SyncRecord old = SyncRecord.FromEvent("success", Event("R-old"), 200, "ok");
+            old.Time = DateTime.Today.AddDays(-1).AddHours(10);
+            history.Append(old);
+            using (SyncHistoryView view = new SyncHistoryView(history))
+            {
+                view.ShowDay(old.Time);
+                Assert(Find<DataGridView>(view, "HistoryGrid").Rows.Count == 1, "saved old-day record visible");
+                SyncRecord live = SyncRecord.FromEvent("success", Event("R-live"), 200, "ok");
+                history.Append(live);
+                view.ShowRecent(); view.AddLive(live);
+                Assert(Find<DataGridView>(view, "HistoryGrid").Rows.Count == 1, "live record visible");
+            }
+        });
+    }
+
+    private static void SelectingRowShowsDetailsWithoutSecrets()
+    {
+        WithConfig(delegate(string path)
+        {
+            SyncHistory history = new SyncHistory(Path.Combine(Path.GetDirectoryName(path), "history"), "gateway-secret");
+            history.Append(SyncRecord.FromEvent("failed", Event("R-1"), 500, "gateway-secret error"));
+            using (SyncHistoryView view = new SyncHistoryView(history))
+            {
+                view.ShowRecent();
+                Find<DataGridView>(view, "HistoryGrid").Rows[0].Selected = true;
+                string detail = Find<TextBox>(view, "RequestDetailBox").Text + Find<TextBox>(view, "ResponseDetailBox").Text;
+                Assert(detail.Contains("FPT-01") && detail.Contains("R-1"), "details include event");
+                Assert(!detail.Contains("gateway-secret"), "details hide token");
+            }
+        });
+    }
+
+    private static void PaginationKeepsRowsBounded()
+    {
+        WithConfig(delegate(string path)
+        {
+            SyncHistory history = new SyncHistory(Path.Combine(Path.GetDirectoryName(path), "history"));
+            for (int i = 0; i < 105; i++) history.Append(SyncRecord.FromEvent("queued", Event("R-" + i), 0, ""));
+            using (SyncHistoryView view = new SyncHistoryView(history))
+            {
+                view.ShowRecent();
+                DataGridView grid = Find<DataGridView>(view, "HistoryGrid");
+                Assert(grid.Rows.Count == 100, "first page bounded");
+                Find<Button>(view, "OlderButton").PerformClick();
+                Assert(grid.Rows.Count == 5, "older page contains remaining records");
+            }
+        });
+    }
+
+    private static System.Collections.Generic.Dictionary<string, object> Event(string recordNo)
+    {
+        System.Collections.Generic.Dictionary<string, object> item = ProbeRecords.CreateEvent("FPT-01", "MAT-1", "FPT-01/MAT-1.txt",
+            DateTime.Now.AddMinutes(-1), DateTime.Now, ProbeRecords.Parse("Test_Counters 2 2 0 01:27:09"));
+        item["recordNo"] = recordNo;
+        return item;
     }
 
     private static void WithConfig(Action<string> test)

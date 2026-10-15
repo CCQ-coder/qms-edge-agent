@@ -119,6 +119,19 @@ internal sealed class SyncHistory
         return rows.GetRange(skip, Math.Min(take, rows.Count - skip));
     }
 
+    public DateTime LatestDay()
+    {
+        DateTime latest = DateTime.MinValue;
+        if (!Directory.Exists(directory)) return DateTime.Today;
+        foreach (string path in Directory.GetFiles(directory, "*.jsonl"))
+        {
+            DateTime day;
+            if (DateTime.TryParseExact(Path.GetFileNameWithoutExtension(path), "yyyy-MM-dd",
+                CultureInfo.InvariantCulture, DateTimeStyles.None, out day) && day > latest) latest = day;
+        }
+        return latest == DateTime.MinValue ? DateTime.Today : latest;
+    }
+
     private string Redact(string value)
     {
         foreach (string secret in secrets)
