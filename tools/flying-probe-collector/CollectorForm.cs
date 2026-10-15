@@ -27,6 +27,7 @@ internal sealed class CollectorForm : Form
     private readonly Label lastSuccess = new Label { Text = "最近成功: 暂无", AutoSize = true };
     private readonly Label lastError = new Label { Text = "最近错误: 暂无", AutoSize = true };
     private bool closingReady;
+    private bool closingRequested;
     private bool stopping;
 
     public CollectorForm(string configPath)
@@ -72,6 +73,7 @@ internal sealed class CollectorForm : Form
         if (!closingReady && runtime != null && runtime.IsRunning)
         {
             e.Cancel = true;
+            closingRequested = true;
             if (!stopping)
             {
                 stopping = true;
@@ -179,6 +181,7 @@ internal sealed class CollectorForm : Form
             Post(delegate
             {
                 stopping = false;
+                if (closingRequested) { closingReady = true; Close(); return; }
                 ToggleInputs(true);
                 status.Text = task.IsFaulted ? "停止失败: " + task.Exception.GetBaseException().Message : "已停止";
             });

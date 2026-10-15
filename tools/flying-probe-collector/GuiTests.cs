@@ -1,5 +1,7 @@
 using System;
 using System.IO;
+using System.Net;
+using System.Net.Sockets;
 using System.Threading;
 using System.Windows.Forms;
 
@@ -17,7 +19,8 @@ internal static class GuiTests
             SelectingRowShowsDetailsWithoutSecrets();
             PaginationKeepsRowsBounded();
             HistoryGridRemainsUsableAtDefaultSize();
-            Console.WriteLine("PASS 7 GUI tests");
+            ClosingWhileStoppingExits();
+            Console.WriteLine("PASS 8 GUI tests");
             return 0;
         }
         catch (Exception error) { Console.Error.WriteLine(error); return 1; }
@@ -155,6 +158,57 @@ internal static class GuiTests
             DateTime.Now.AddMinutes(-1), DateTime.Now, ProbeRecords.Parse("Test_Counters 2 2 0 01:27:09"));
         item["recordNo"] = recordNo;
         return item;
+    }
+
+    private static void ClosingWhileStoppingExits()
+    {
+        WithConfig(delegate(string path)
+        {
+            TcpListener listener = new TcpListener(IPAddress.Loopback, 0);
+            listener.Start();
+            ManualResetEvent connected = new ManualResetEvent(false);
+            ManualResetEvent release = new ManualResetEvent(false);
+            Thread server = new Thread(delegate()
+            {
+                try
+                {
+                    using (TcpClient client = listener.AcceptTcpClient())
+                    using (NetworkStream stream = client.GetStream())
+                    {
+                        connected.Set();
+                        release.WaitOne(5000);
+                        byte[] response = System.Text.Encoding.ASCII.GetBytes("HTTP/1.1 204 No Content\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+                        stream.Write(response, 0, response.Length);
+                    }
+                }
+                catch (SocketException) { }
+            });
+            server.IsBackground = true;
+            server.Start();
+            try
+            {
+                string url = "http://127.0.0.1:" + ((IPEndPoint)listener.LocalEndpoint).Port;
+                string ini = File.ReadAllText(path).Replace("http://127.0.0.1:1", url)
+                    .Replace("REPLACE_WITH_QMS_GATEWAY_TOKEN", "real-gateway");
+                File.WriteAllText(path, ini);
+                PendingEventStore queue = new PendingEventStore(Path.Combine(Path.GetDirectoryName(path), "pending.json"));
+                queue.Enqueue(Event("R-slow"));
+                using (CollectorForm form = new CollectorForm(path))
+                {
+                    form.Show(); Application.DoEvents();
+                    DateTime deadline = DateTime.UtcNow.AddSeconds(5);
+                    while (!connected.WaitOne(0) && DateTime.UtcNow < deadline) { Application.DoEvents(); Thread.Sleep(20); }
+                    Assert(connected.WaitOne(0), "slow request started");
+                    Find<Button>(form, "StopButton").PerformClick();
+                    form.Close();
+                    release.Set();
+                    deadline = DateTime.UtcNow.AddSeconds(5);
+                    while (!form.IsDisposed && DateTime.UtcNow < deadline) { Application.DoEvents(); Thread.Sleep(20); }
+                    Assert(form.IsDisposed, "closing during stop exits after current request");
+                }
+            }
+            finally { release.Set(); listener.Stop(); server.Join(1000); }
+        });
     }
 
     private static void WithConfig(Action<string> test)
