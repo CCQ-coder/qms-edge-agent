@@ -9,6 +9,7 @@ internal sealed class ProbeScanner
     private readonly PendingEventStore pending;
     private readonly ScanCheckpointStore checkpoints;
     private readonly Action<string> log;
+    private readonly Action<SyncRecord> onRecord;
     private readonly Dictionary<string, FileStamp> observed = new Dictionary<string, FileStamp>(StringComparer.OrdinalIgnoreCase);
 
     private struct FileStamp
@@ -18,11 +19,18 @@ internal sealed class ProbeScanner
     }
 
     public ProbeScanner(string root, PendingEventStore pending, ScanCheckpointStore checkpoints, Action<string> log)
+        : this(root, pending, checkpoints, log, null)
+    {
+    }
+
+    public ProbeScanner(string root, PendingEventStore pending, ScanCheckpointStore checkpoints, Action<string> log,
+        Action<SyncRecord> onRecord)
     {
         this.root = root;
         this.pending = pending;
         this.checkpoints = checkpoints;
         this.log = log;
+        this.onRecord = onRecord;
     }
 
     public void ScanOnce()
@@ -93,6 +101,11 @@ internal sealed class ProbeScanner
         if (checkpoints.Contains(relativePath, recordNo)) return;
         pending.Enqueue(eventItem);
         checkpoints.Record(relativePath, recordNo);
+        if (onRecord != null)
+        {
+            try { onRecord(SyncRecord.FromEvent("queued", eventItem, 0, "")); }
+            catch (Exception error) { Log("History write failed for " + recordNo + ": " + error.GetType().Name); }
+        }
         Log("Queued " + relativePath + " record=" + recordNo);
     }
 

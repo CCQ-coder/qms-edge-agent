@@ -39,6 +39,10 @@ internal static class CollectorTests
             Run("RedirectRetainsEvent", RedirectRetainsEvent);
             Run("NoBearerWhenEmpty", NoBearerWhenEmpty);
             Run("LoadSettingsRelativeToIni", LoadSettingsRelativeToIni);
+            Run("HistorySurvivesRestart", HistorySurvivesRestart);
+            Run("MalformedHistoryLineIsReported", MalformedHistoryLineIsReported);
+            Run("AcceptedWithoutHistoryStaysQueued", AcceptedWithoutHistoryStaysQueued);
+            Run("HistoryNeverContainsTokens", HistoryNeverContainsTokens);
             Run("SettingsDraftCanOpenPlaceholder", SettingsDraftCanOpenPlaceholder);
             Run("SavePreservesOtherEntries", SavePreservesOtherEntries);
             Run("BuildReleaseLayout", BuildReleaseLayout);
@@ -489,6 +493,66 @@ internal static class CollectorTests
                 AssertThrowsArgument(delegate { Settings.Load(config); }, "missing QMS URL rejected");
             }
             finally { Environment.CurrentDirectory = prior; }
+        });
+    }
+
+    private static void HistorySurvivesRestart()
+    {
+        InTempDirectory(delegate(string directory)
+        {
+            SyncHistory history = new SyncHistory(directory, "gateway-secret", "bearer-secret");
+            history.Append(SyncRecord.FromEvent("queued", EventWithRecord("R-1"), 0, ""));
+            history.Append(SyncRecord.FromEvent("failed", EventWithRecord("R-1"), 500, "temporary"));
+            history.Append(SyncRecord.FromEvent("success", EventWithRecord("R-1"), 204, "accepted"));
+            int invalid;
+            IList<SyncRecord> records = new SyncHistory(directory).ReadPage(DateTime.Now, 0, 20, out invalid);
+            Assert(records.Count == 3 && invalid == 0, "history survives new instance");
+            Assert(records[0].Stage == "success" && records[2].Stage == "queued", "newest history first");
+        });
+    }
+
+    private static void MalformedHistoryLineIsReported()
+    {
+        InTempDirectory(delegate(string directory)
+        {
+            SyncHistory history = new SyncHistory(directory);
+            history.Append(SyncRecord.FromEvent("queued", EventWithRecord("R-1"), 0, ""));
+            File.AppendAllText(Path.Combine(directory, DateTime.Now.ToString("yyyy-MM-dd") + ".jsonl"), "{broken\n");
+            int invalid;
+            IList<SyncRecord> records = history.ReadPage(DateTime.Now, 0, 20, out invalid);
+            Assert(records.Count == 1 && invalid == 1, "damaged line is reported and valid row remains");
+        });
+    }
+
+    private static void AcceptedWithoutHistoryStaysQueued()
+    {
+        InTempDirectory(delegate(string directory)
+        {
+            PendingEventStore queue = new PendingEventStore(Path.Combine(directory, "pending.json"));
+            queue.Enqueue(EventWithRecord("R-1"));
+            using (HttpFixture server = new HttpFixture(204))
+            {
+                Action<SyncRecord> broken = delegate(SyncRecord record) { throw new IOException("history unavailable"); };
+                AssertThrowsAny(delegate { new QmsSender(server.BaseUrl, "gateway-secret", "", 2, queue,
+                    delegate(string message) { }, broken).SendPending(); }, "history failure is surfaced");
+                server.WaitForRequests();
+                Assert(queue.Snapshot().Count == 1, "accepted event remains queued when history fails");
+            }
+        });
+    }
+
+    private static void HistoryNeverContainsTokens()
+    {
+        InTempDirectory(delegate(string directory)
+        {
+            SyncHistory history = new SyncHistory(directory, "gateway-secret", "bearer-secret");
+            history.Append(SyncRecord.FromEvent("failed", EventWithRecord("R-1"), 500,
+                "gateway-secret bearer-secret " + new string('汉', 10000)));
+            string raw = File.ReadAllText(Path.Combine(directory, DateTime.Now.ToString("yyyy-MM-dd") + ".jsonl"));
+            Assert(!raw.Contains("gateway-secret") && !raw.Contains("bearer-secret"), "tokens redacted on disk");
+            int invalid;
+            SyncRecord record = history.ReadPage(DateTime.Now, 0, 1, out invalid)[0];
+            Assert(Encoding.UTF8.GetByteCount(record.Response) <= 8192, "response summary bounded by UTF-8 bytes");
         });
     }
 

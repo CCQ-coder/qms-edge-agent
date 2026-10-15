@@ -11,7 +11,7 @@ if not exist "%CSC%" (
   exit /b 1
 )
 
-"%CSC%" /nologo /target:exe /main:Program /platform:anycpu /optimize+ /out:"%OUT_DIR%\FlyingProbeCollector.exe" /reference:System.dll /reference:System.Core.dll /reference:System.Web.Extensions.dll "%SCRIPT_DIR%Program.cs" "%SCRIPT_DIR%SettingsDocument.cs" "%SCRIPT_DIR%ProbeRecords.cs" "%SCRIPT_DIR%LocalStores.cs" "%SCRIPT_DIR%ProbeScanner.cs" "%SCRIPT_DIR%QmsSender.cs"
+"%CSC%" /nologo /target:exe /main:Program /platform:anycpu /optimize+ /out:"%OUT_DIR%\FlyingProbeCollector.exe" /reference:System.dll /reference:System.Core.dll /reference:System.Web.Extensions.dll "%SCRIPT_DIR%Program.cs" "%SCRIPT_DIR%SettingsDocument.cs" "%SCRIPT_DIR%ProbeRecords.cs" "%SCRIPT_DIR%LocalStores.cs" "%SCRIPT_DIR%ProbeScanner.cs" "%SCRIPT_DIR%QmsSender.cs" "%SCRIPT_DIR%SyncHistory.cs"
 if errorlevel 1 exit /b %errorlevel%
 
 if not exist "%OUT_DIR%\FlyingProbeCollector.ini" copy /Y "%SCRIPT_DIR%FlyingProbeCollector.ini" "%OUT_DIR%\FlyingProbeCollector.ini" >nul
