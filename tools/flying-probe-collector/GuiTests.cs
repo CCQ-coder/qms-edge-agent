@@ -16,7 +16,8 @@ internal static class GuiTests
             HistoryViewShowsSavedAndLiveRecords();
             SelectingRowShowsDetailsWithoutSecrets();
             PaginationKeepsRowsBounded();
-            Console.WriteLine("PASS 6 GUI tests");
+            HistoryGridRemainsUsableAtDefaultSize();
+            Console.WriteLine("PASS 7 GUI tests");
             return 0;
         }
         catch (Exception error) { Console.Error.WriteLine(error); return 1; }
@@ -130,6 +131,20 @@ internal static class GuiTests
                 Assert(grid.Rows.Count == 100, "first page bounded");
                 Find<Button>(view, "OlderButton").PerformClick();
                 Assert(grid.Rows.Count == 5, "older page contains remaining records");
+            }
+        });
+    }
+
+    private static void HistoryGridRemainsUsableAtDefaultSize()
+    {
+        WithConfig(delegate(string path)
+        {
+            using (CollectorForm form = new CollectorForm(path))
+            {
+                form.Show(); Application.DoEvents();
+                Assert(Find<DataGridView>(form, "HistoryGrid").Height >= 150,
+                    "sync records table has space for several rows");
+                form.Close();
             }
         });
     }

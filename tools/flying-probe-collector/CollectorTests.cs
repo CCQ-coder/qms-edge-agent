@@ -48,6 +48,7 @@ internal static class CollectorTests
             Run("SettingsDraftCanOpenPlaceholder", SettingsDraftCanOpenPlaceholder);
             Run("SavePreservesOtherEntries", SavePreservesOtherEntries);
             Run("BuildReleaseLayout", BuildReleaseLayout);
+            Run("GuiExeOpensWithPlaceholder", GuiExeOpensWithPlaceholder);
             Run("LauncherExplainsStartupFailure", LauncherExplainsStartupFailure);
             Run("SecondLaunchFailsClearly", SecondLaunchFailsClearly);
             Run("ScanFailureStillAttemptsDelivery", ScanFailureStillAttemptsDelivery);
@@ -655,6 +656,7 @@ internal static class CollectorTests
             string release = Path.Combine(directory, "repo", "outputs", "flying-probe-collector");
             RunBuild(build, directory);
             Assert(File.Exists(Path.Combine(release, "FlyingProbeCollector.exe")), "independent EXE released");
+            Assert(File.Exists(Path.Combine(release, "FlyingProbeCollector.Console.exe")), "console EXE released alongside GUI");
             Assert(File.Exists(Path.Combine(release, "FlyingProbeCollector.ini")), "default INI released");
             Assert(File.Exists(Path.Combine(release, "start-collector.cmd")), "launcher released");
             Assert(File.Exists(Path.Combine(release, "README.md")), "operating guide released");
@@ -662,6 +664,38 @@ internal static class CollectorTests
             File.WriteAllText(siteConfig, "QmsBaseUrl=site-value\r\n");
             RunBuild(build, directory);
             Assert(File.ReadAllText(siteConfig) == "QmsBaseUrl=site-value\r\n", "rebuild preserves site INI");
+        });
+    }
+
+    private static void GuiExeOpensWithPlaceholder()
+    {
+        InTempDirectory(delegate(string directory)
+        {
+            string source = Environment.GetEnvironmentVariable("FPT_TOOL_DIR");
+            string target = Path.Combine(directory, "repo", "tools", "flying-probe-collector");
+            Directory.CreateDirectory(target);
+            foreach (string file in Directory.GetFiles(source)) File.Copy(file, Path.Combine(target, Path.GetFileName(file)));
+            RunBuild(Path.Combine(target, "build.cmd"), directory);
+            string release = Path.Combine(directory, "repo", "outputs", "flying-probe-collector");
+            ProcessStartInfo start = new ProcessStartInfo(Path.Combine(release, "FlyingProbeCollector.exe"));
+            start.WorkingDirectory = release;
+            start.UseShellExecute = false;
+            using (Process process = Process.Start(start))
+            {
+                try
+                {
+                    Assert(process.WaitForInputIdle(5000), "GUI message loop starts");
+                    DateTime windowDeadline = DateTime.UtcNow.AddSeconds(5);
+                    do { process.Refresh(); if (process.MainWindowHandle != IntPtr.Zero || process.HasExited) break; Thread.Sleep(50); }
+                    while (DateTime.UtcNow < windowDeadline);
+                    Assert(!process.HasExited && process.MainWindowHandle != IntPtr.Zero,
+                        "placeholder shows a live window; exited=" + process.HasExited + " handle=" + process.MainWindowHandle +
+                        (process.HasExited ? " code=" + process.ExitCode : ""));
+                    process.CloseMainWindow();
+                    Assert(process.WaitForExit(5000), "GUI closes normally");
+                }
+                finally { if (!process.HasExited) { process.Kill(); process.WaitForExit(5000); } }
+            }
         });
     }
 
@@ -675,7 +709,9 @@ internal static class CollectorTests
             foreach (string file in Directory.GetFiles(source)) File.Copy(file, Path.Combine(target, Path.GetFileName(file)));
             RunBuild(Path.Combine(target, "build.cmd"), directory);
             string release = Path.Combine(directory, "repo", "outputs", "flying-probe-collector");
-            ProcessStartInfo start = new ProcessStartInfo("cmd.exe", "/c start-collector.cmd <NUL");
+            Assert(File.ReadAllText(Path.Combine(release, "start-collector.cmd")).Contains("FlyingProbeCollector.exe"),
+                "launcher opens GUI executable");
+            ProcessStartInfo start = new ProcessStartInfo(Path.Combine(release, "FlyingProbeCollector.Console.exe"));
             start.WorkingDirectory = release;
             start.UseShellExecute = false;
             start.CreateNoWindow = true;
@@ -685,10 +721,9 @@ internal static class CollectorTests
             {
                 string output = process.StandardOutput.ReadToEnd();
                 string error = process.StandardError.ReadToEnd();
-                Assert(process.WaitForExit(5000), "launcher exits when configuration is invalid");
-                Assert(process.ExitCode != 0, "launcher retains startup failure exit code");
+                Assert(process.WaitForExit(5000), "console exits when configuration is invalid");
+                Assert(process.ExitCode != 0, "console retains startup failure exit code");
                 Assert(error.Contains("GatewayToken must contain"), "configuration error is visible");
-                Assert(output.Contains("Check FlyingProbeCollector.ini"), "launcher points operator to configuration file");
             }
         });
     }
@@ -709,7 +744,7 @@ internal static class CollectorTests
                 "SourceRoot=" + input + "\r\nScanIntervalSeconds=1\r\nQmsBaseUrl=http://127.0.0.1:1\r\n" +
                 "GatewayToken=test-token\r\nQueueFile=.\\data\\pending.json\r\n" +
                 "CheckpointFile=.\\data\\scan.json\r\nLogFile=.\\logs\\collector.log\r\n");
-            string exe = Path.Combine(release, "FlyingProbeCollector.exe");
+            string exe = Path.Combine(release, "FlyingProbeCollector.Console.exe");
             ProcessStartInfo start = new ProcessStartInfo(exe);
             start.WorkingDirectory = release;
             start.UseShellExecute = false;

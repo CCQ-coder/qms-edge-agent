@@ -58,8 +58,8 @@ internal sealed class SyncHistoryView : UserControl
     {
         TableLayoutPanel layout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 3 };
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 38));
-        layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 190));
+        layout.RowStyles.Add(new RowStyle(SizeType.Percent, 55));
+        layout.RowStyles.Add(new RowStyle(SizeType.Percent, 45));
         FlowLayoutPanel filters = new FlowLayoutPanel { Dock = DockStyle.Fill, WrapContents = false };
         filters.Controls.Add(new Label { Text = "日期:", AutoSize = true, Margin = new Padding(4, 8, 4, 4) });
         filters.Controls.Add(dayPicker);
