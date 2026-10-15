@@ -40,6 +40,7 @@ internal static class CollectorTests
             Run("NoBearerWhenEmpty", NoBearerWhenEmpty);
             Run("LoadSettingsRelativeToIni", LoadSettingsRelativeToIni);
             Run("BuildReleaseLayout", BuildReleaseLayout);
+            Run("LauncherExplainsStartupFailure", LauncherExplainsStartupFailure);
             Run("SecondLaunchFailsClearly", SecondLaunchFailsClearly);
             Run("ScanFailureStillAttemptsDelivery", ScanFailureStillAttemptsDelivery);
             Console.WriteLine("Passed " + passed.ToString(CultureInfo.InvariantCulture) + " test(s).");
@@ -512,6 +513,34 @@ internal static class CollectorTests
             File.WriteAllText(siteConfig, "QmsBaseUrl=site-value\r\n");
             RunBuild(build, directory);
             Assert(File.ReadAllText(siteConfig) == "QmsBaseUrl=site-value\r\n", "rebuild preserves site INI");
+        });
+    }
+
+    private static void LauncherExplainsStartupFailure()
+    {
+        InTempDirectory(delegate(string directory)
+        {
+            string source = Environment.GetEnvironmentVariable("FPT_TOOL_DIR");
+            string target = Path.Combine(directory, "repo", "tools", "flying-probe-collector");
+            Directory.CreateDirectory(target);
+            foreach (string file in Directory.GetFiles(source)) File.Copy(file, Path.Combine(target, Path.GetFileName(file)));
+            RunBuild(Path.Combine(target, "build.cmd"), directory);
+            string release = Path.Combine(directory, "repo", "outputs", "flying-probe-collector");
+            ProcessStartInfo start = new ProcessStartInfo("cmd.exe", "/c start-collector.cmd <NUL");
+            start.WorkingDirectory = release;
+            start.UseShellExecute = false;
+            start.CreateNoWindow = true;
+            start.RedirectStandardOutput = true;
+            start.RedirectStandardError = true;
+            using (Process process = Process.Start(start))
+            {
+                string output = process.StandardOutput.ReadToEnd();
+                string error = process.StandardError.ReadToEnd();
+                Assert(process.WaitForExit(5000), "launcher exits when configuration is invalid");
+                Assert(process.ExitCode != 0, "launcher retains startup failure exit code");
+                Assert(error.Contains("GatewayToken must contain"), "configuration error is visible");
+                Assert(output.Contains("Check FlyingProbeCollector.ini"), "launcher points operator to configuration file");
+            }
         });
     }
 

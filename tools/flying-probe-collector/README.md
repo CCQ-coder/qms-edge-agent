@@ -8,7 +8,7 @@
 
 先修改发布目录中的 `FlyingProbeCollector.ini`：填写真实 `QmsBaseUrl` 和 `GatewayToken`；生产 QMS 需要服务账号认证时，填写不带 `Bearer ` 前缀的 `BearerToken`。请勿将真实令牌提交到仓库。每个设备子目录名必须在 QMS 的“设备网关映射”中映射到对应设备的 `machineName`。
 
-运行 `start-collector.cmd`，或执行 `FlyingProbeCollector.exe --config <配置文件路径>`。程序持续运行，按 `ScanIntervalSeconds` 轮询；按 Ctrl+C 可退出。首次启动会采集现有 TXT 文件的当前快照，此后文件更新时上报新快照。文件需在连续两轮扫描中保持长度和修改时间不变才会被处理。
+现场请双击 `start-collector.cmd`，或在命令行执行 `FlyingProbeCollector.exe --config <配置文件路径>`。程序持续运行，按 `ScanIntervalSeconds` 轮询；按 Ctrl+C 可退出。如果配置有误，启动脚本会显示错误并暂停，方便检查同目录的 `FlyingProbeCollector.ini`。直接双击 EXE 时，Windows 会在程序退出后立即关闭控制台。首次启动会采集现有 TXT 文件的当前快照，此后文件更新时上报新快照。文件需在连续两轮扫描中保持长度和修改时间不变才会被处理。
 
 ## 数据与故障恢复
 
