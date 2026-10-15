@@ -39,6 +39,8 @@ internal static class CollectorTests
             Run("RedirectRetainsEvent", RedirectRetainsEvent);
             Run("NoBearerWhenEmpty", NoBearerWhenEmpty);
             Run("LoadSettingsRelativeToIni", LoadSettingsRelativeToIni);
+            Run("SettingsDraftCanOpenPlaceholder", SettingsDraftCanOpenPlaceholder);
+            Run("SavePreservesOtherEntries", SavePreservesOtherEntries);
             Run("BuildReleaseLayout", BuildReleaseLayout);
             Run("LauncherExplainsStartupFailure", LauncherExplainsStartupFailure);
             Run("SecondLaunchFailsClearly", SecondLaunchFailsClearly);
@@ -487,6 +489,35 @@ internal static class CollectorTests
                 AssertThrowsArgument(delegate { Settings.Load(config); }, "missing QMS URL rejected");
             }
             finally { Environment.CurrentDirectory = prior; }
+        });
+    }
+
+    private static void SettingsDraftCanOpenPlaceholder()
+    {
+        InTempDirectory(delegate(string directory)
+        {
+            string path = Path.Combine(directory, "settings.ini");
+            File.WriteAllText(path, "QmsBaseUrl=http://127.0.0.1:8080\r\nGatewayToken=REPLACE_WITH_QMS_GATEWAY_TOKEN\r\n");
+            SettingsDocument draft = SettingsDocument.Load(path);
+            Assert(draft.Get("GatewayToken", "") == "REPLACE_WITH_QMS_GATEWAY_TOKEN", "placeholder remains editable");
+            AssertThrowsArgument(delegate { draft.Validate(); }, "placeholder rejected on validation");
+        });
+    }
+
+    private static void SavePreservesOtherEntries()
+    {
+        InTempDirectory(delegate(string directory)
+        {
+            string path = Path.Combine(directory, "settings.ini");
+            File.WriteAllText(path, "; site note\r\n[Custom]\r\nUnknown=kept\r\nQueueFile=.\\state\\pending.json\r\nGatewayToken=old\r\n");
+            SettingsDocument draft = SettingsDocument.Load(path);
+            draft.Set("GatewayToken", "new");
+            draft.Set("QmsBaseUrl", "https://qms.example");
+            draft.Save();
+            string result = File.ReadAllText(path);
+            Assert(result.Contains("Unknown=kept") && result.Contains("; site note"), "unknown lines remain");
+            Assert(result.Contains("QueueFile=.\\state\\pending.json"), "storage path remains");
+            Assert(Settings.Load(path).GatewayToken == "new", "edited value persists");
         });
     }
 

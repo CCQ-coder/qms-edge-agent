@@ -8,7 +8,7 @@ if not exist "%CSC%" exit /b 1
 set FPT_TEST_ROOT=%SCRIPT_DIR%..\..\outputs\flying-probe-testdata
 set FPT_TOOL_DIR=%SCRIPT_DIR%
 mkdir "%TEST_DIR%" || exit /b 1
-"%CSC%" /nologo /target:exe /main:CollectorTests /out:"%TEST_DIR%\CollectorTests.exe" /reference:System.dll /reference:System.Core.dll /reference:System.Web.Extensions.dll "%SCRIPT_DIR%CollectorTests.cs" "%SCRIPT_DIR%ProbeRecords.cs" "%SCRIPT_DIR%LocalStores.cs" "%SCRIPT_DIR%ProbeScanner.cs" "%SCRIPT_DIR%QmsSender.cs" "%SCRIPT_DIR%Program.cs"
+"%CSC%" /nologo /target:exe /main:CollectorTests /out:"%TEST_DIR%\CollectorTests.exe" /reference:System.dll /reference:System.Core.dll /reference:System.Web.Extensions.dll "%SCRIPT_DIR%CollectorTests.cs" "%SCRIPT_DIR%ProbeRecords.cs" "%SCRIPT_DIR%LocalStores.cs" "%SCRIPT_DIR%ProbeScanner.cs" "%SCRIPT_DIR%QmsSender.cs" "%SCRIPT_DIR%Program.cs" "%SCRIPT_DIR%SettingsDocument.cs"
 if errorlevel 1 goto :failure
 "%TEST_DIR%\CollectorTests.exe"
 if errorlevel 1 goto :failure

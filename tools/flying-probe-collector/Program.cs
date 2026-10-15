@@ -21,15 +21,12 @@ internal sealed class Settings
     public static Settings Load(string path)
     {
         if (!File.Exists(path)) throw new FileNotFoundException("Collector configuration was not found.", path);
+        return SettingsDocument.Load(path).Validate();
+    }
+
+    internal static Settings FromValues(string path, Dictionary<string, string> values)
+    {
         string baseDirectory = Path.GetDirectoryName(Path.GetFullPath(path));
-        Dictionary<string, string> values = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-        foreach (string original in File.ReadAllLines(path, Encoding.UTF8))
-        {
-            string line = original.Trim();
-            if (line.Length == 0 || line.StartsWith(";") || line.StartsWith("#") || line.StartsWith("[")) continue;
-            int separator = line.IndexOf('=');
-            if (separator > 0) values[line.Substring(0, separator).Trim()] = line.Substring(separator + 1).Trim();
-        }
         Settings result = new Settings();
         result.SourceRoot = ResolvePath(baseDirectory, Read(values, "SourceRoot", @"\\Scbgx\数字化\飞针机"));
         result.ScanIntervalSeconds = ReadInt(values, "ScanIntervalSeconds", 30, 1, 3600);
