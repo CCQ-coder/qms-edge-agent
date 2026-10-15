@@ -43,6 +43,8 @@ internal static class CollectorTests
             Run("MalformedHistoryLineIsReported", MalformedHistoryLineIsReported);
             Run("AcceptedWithoutHistoryStaysQueued", AcceptedWithoutHistoryStaysQueued);
             Run("HistoryNeverContainsTokens", HistoryNeverContainsTokens);
+            Run("RuntimeStartStopReleasesLock", RuntimeStartStopReleasesLock);
+            Run("StopDoesNotSendNextPendingEvent", StopDoesNotSendNextPendingEvent);
             Run("SettingsDraftCanOpenPlaceholder", SettingsDraftCanOpenPlaceholder);
             Run("SavePreservesOtherEntries", SavePreservesOtherEntries);
             Run("BuildReleaseLayout", BuildReleaseLayout);
@@ -554,6 +556,58 @@ internal static class CollectorTests
             SyncRecord record = history.ReadPage(DateTime.Now, 0, 1, out invalid)[0];
             Assert(Encoding.UTF8.GetByteCount(record.Response) <= 8192, "response summary bounded by UTF-8 bytes");
         });
+    }
+
+    private static void RuntimeStartStopReleasesLock()
+    {
+        InTempDirectory(delegate(string directory)
+        {
+            Settings settings = RuntimeSettings(directory, "http://127.0.0.1:1");
+            CollectorRuntime runtime = new CollectorRuntime(settings, delegate(string line) { }, null, null);
+            runtime.Start();
+            Assert(runtime.IsRunning, "runtime starts");
+            AssertThrowsAny(delegate { new CollectorOwnership(settings.QueueFile).Dispose(); }, "running collector owns storage");
+            Assert(runtime.StopAsync().Wait(5000), "runtime stops promptly");
+            using (new CollectorOwnership(settings.QueueFile)) { }
+        });
+    }
+
+    private static void StopDoesNotSendNextPendingEvent()
+    {
+        InTempDirectory(delegate(string directory)
+        {
+            string source = Path.Combine(directory, "source");
+            Directory.CreateDirectory(source);
+            using (HttpFixture server = new HttpFixture(204))
+            {
+                Settings settings = RuntimeSettings(directory, server.BaseUrl);
+                PendingEventStore queue = new PendingEventStore(settings.QueueFile);
+                queue.Enqueue(EventWithRecord("R-1"));
+                queue.Enqueue(EventWithRecord("R-2"));
+                CollectorRuntime runtime = null;
+                ManualResetEvent firstDone = new ManualResetEvent(false);
+                runtime = new CollectorRuntime(settings, delegate(string line) { }, delegate(SyncRecord record)
+                {
+                    if (record.Stage == "success") { runtime.StopAsync(); firstDone.Set(); }
+                }, null);
+                runtime.Start();
+                Assert(firstDone.WaitOne(5000), "first event sent before stop");
+                Assert(runtime.StopAsync().Wait(5000), "runtime stopped");
+                server.WaitForRequests();
+                IList<Dictionary<string, object>> remaining = new PendingEventStore(settings.QueueFile).Snapshot();
+                Assert(remaining.Count == 1 && Text(remaining[0], "recordNo") == "R-2", "second event retained");
+            }
+        });
+    }
+
+    private static Settings RuntimeSettings(string directory, string url)
+    {
+        string source = Path.Combine(directory, "source");
+        Directory.CreateDirectory(source);
+        string path = Path.Combine(directory, "runtime.ini");
+        File.WriteAllText(path, "SourceRoot=" + source + "\r\nScanIntervalSeconds=1\r\nQmsBaseUrl=" + url +
+            "\r\nGatewayToken=test-token\r\nQueueFile=.\\pending.json\r\nCheckpointFile=.\\checkpoint.json\r\nLogFile=.\\collector.log\r\n");
+        return Settings.Load(path);
     }
 
     private static void SettingsDraftCanOpenPlaceholder()

@@ -86,7 +86,7 @@ internal static class Program
         {
             if (args.Length != 2 || !string.Equals(args[0], "--config", StringComparison.OrdinalIgnoreCase))
             {
-                Console.Error.WriteLine("Usage: FlyingProbeCollector.exe [--config <path>]");
+                Console.Error.WriteLine("Usage: FlyingProbeCollector.Console.exe [--config <path>]");
                 return 2;
             }
             configPath = Path.GetFullPath(args[1]);
@@ -104,28 +104,17 @@ internal static class Program
                 File.AppendAllText(settings.LogFile, line + Environment.NewLine, Encoding.UTF8);
                 Console.WriteLine(line);
             };
-            using (new CollectorOwnership(settings.QueueFile))
+            CollectorRuntime runtime = new CollectorRuntime(settings, log, null, null);
+            stopping = false;
+            Console.CancelKeyPress += delegate(object source, ConsoleCancelEventArgs eventArgs)
             {
-                PendingEventStore pending = new PendingEventStore(settings.QueueFile);
-                ScanCheckpointStore checkpoints = new ScanCheckpointStore(settings.CheckpointFile);
-                ProbeScanner scanner = new ProbeScanner(settings.SourceRoot, pending, checkpoints, log);
-                QmsSender sender = new QmsSender(settings.QmsBaseUrl, settings.GatewayToken, settings.BearerToken,
-                    settings.RequestTimeoutSeconds, pending, log);
-                Console.CancelKeyPress += delegate(object source, ConsoleCancelEventArgs eventArgs)
-                {
-                    eventArgs.Cancel = true;
-                    stopping = true;
-                };
-                log("Flying probe collector started. Source=" + settings.SourceRoot);
-                while (!stopping)
-                {
-                    RunCycle(scanner.ScanOnce, sender.SendPending, log);
-                    int ticks = settings.ScanIntervalSeconds * 4;
-                    for (int index = 0; index < ticks && !stopping; index++) Thread.Sleep(250);
-                }
-                log("Flying probe collector stopped.");
-                return 0;
-            }
+                eventArgs.Cancel = true;
+                stopping = true;
+            };
+            runtime.Start();
+            while (!stopping && runtime.IsRunning) Thread.Sleep(250);
+            runtime.StopAsync().Wait();
+            return 0;
         }
         catch (Exception error)
         {
