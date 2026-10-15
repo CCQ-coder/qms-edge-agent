@@ -36,7 +36,14 @@ internal sealed class ProbeScanner
 
     public void ScanOnce()
     {
+        ScanOnce(delegate { return false; });
+    }
+
+    public void ScanOnce(Func<bool> shouldStop)
+    {
+        if (shouldStop == null) throw new ArgumentNullException("shouldStop");
         LastScanHadError = false;
+        if (shouldStop()) return;
         string[] directories;
         try
         {
@@ -55,6 +62,7 @@ internal sealed class ProbeScanner
 
         foreach (string directory in directories)
         {
+            if (shouldStop()) return;
             string[] files;
             try
             {
@@ -72,6 +80,7 @@ internal sealed class ProbeScanner
             }
             foreach (string file in files)
             {
+                if (shouldStop()) return;
                 if (!string.Equals(Path.GetExtension(file), ".txt", StringComparison.OrdinalIgnoreCase)) continue;
                 try { ScanFile(directory, file); }
                 catch (IOException error) { Issue("File unavailable: " + file + ": " + error.Message); }

@@ -77,7 +77,7 @@ internal sealed class CollectorForm : Form
             if (!stopping)
             {
                 stopping = true;
-                status.Text = "正在停止，等待当前请求完成…";
+                status.Text = "正在停止，等待当前操作结束…";
                 runtime.StopAsync().ContinueWith(delegate(Task task)
                 {
                     Post(delegate { closingReady = true; Close(); });
@@ -198,7 +198,7 @@ internal sealed class CollectorForm : Form
     {
         if (runtime == null || !runtime.IsRunning || stopping) return;
         stopping = true;
-        status.Text = "正在停止，等待当前请求完成…";
+        status.Text = "正在停止，等待当前操作结束…";
         runtime.StopAsync().ContinueWith(delegate(Task task)
         {
             Post(delegate

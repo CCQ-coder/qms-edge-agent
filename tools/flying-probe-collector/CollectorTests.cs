@@ -45,6 +45,7 @@ internal static class CollectorTests
             Run("AcceptedWithoutHistoryStaysQueued", AcceptedWithoutHistoryStaysQueued);
             Run("HistoryNeverContainsTokens", HistoryNeverContainsTokens);
             Run("RuntimeStartStopReleasesLock", RuntimeStartStopReleasesLock);
+            Run("StopDuringScanKeepsUnprocessedFiles", StopDuringScanKeepsUnprocessedFiles);
             Run("StopDoesNotSendNextPendingEvent", StopDoesNotSendNextPendingEvent);
             Run("SlowResponseHonorsOverallTimeout", SlowResponseHonorsOverallTimeout);
             Run("SettingsDraftCanOpenPlaceholder", SettingsDraftCanOpenPlaceholder);
@@ -590,6 +591,32 @@ internal static class CollectorTests
             AssertThrowsAny(delegate { new CollectorOwnership(settings.QueueFile).Dispose(); }, "running collector owns storage");
             Assert(runtime.StopAsync().Wait(5000), "runtime stops promptly");
             using (new CollectorOwnership(settings.QueueFile)) { }
+        });
+    }
+
+    private static void StopDuringScanKeepsUnprocessedFiles()
+    {
+        InTempDirectory(delegate(string directory)
+        {
+            Settings settings = RuntimeSettings(directory, "http://127.0.0.1:1");
+            string device = Path.Combine(settings.SourceRoot, "FPT-01");
+            Directory.CreateDirectory(device);
+            for (int i = 0; i < 3; i++)
+                File.WriteAllText(Path.Combine(device, "MAT-" + i.ToString(CultureInfo.InvariantCulture) + ".txt"),
+                    "Test_Counters 2 2 0 01:27:09");
+            CollectorRuntime runtime = null;
+            using (ManualResetEvent firstQueued = new ManualResetEvent(false))
+            {
+                runtime = new CollectorRuntime(settings, delegate(string line) { }, delegate(SyncRecord record)
+                {
+                    if (record.Stage == "queued") { runtime.StopAsync(); firstQueued.Set(); }
+                }, null);
+                runtime.Start();
+                Assert(firstQueued.WaitOne(5000), "first file queued before stop");
+                Assert(runtime.StopAsync().Wait(5000), "stop completes during scan");
+                Assert(new PendingEventStore(settings.QueueFile).Snapshot().Count == 1,
+                    "scanner leaves other files for next run");
+            }
         });
     }
 

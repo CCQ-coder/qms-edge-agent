@@ -73,7 +73,7 @@ internal sealed class CollectorRuntime
                         {
                             bool scanError = false;
                             bool sendError = false;
-                            try { scanner.ScanOnce(); scanError = scanner.LastScanHadError; }
+                            try { scanner.ScanOnce(delegate { return stop.WaitOne(0); }); scanError = scanner.LastScanHadError; }
                             catch (Exception error) { scanError = true; Log("Scan failed: " + error.Message); }
                             if (scanError) Report(CollectorNoticeKind.ScanError);
                             try { sender.SendPending(delegate { return stop.WaitOne(0); }); sendError = sender.LastSendFailed; }
