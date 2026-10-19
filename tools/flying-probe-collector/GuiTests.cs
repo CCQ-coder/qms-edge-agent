@@ -14,6 +14,9 @@ internal static class GuiTests
         try
         {
             InvalidConfigOpensWindow();
+            IncompleteConfigSavePersistsUrl();
+            UnsavedEditCannotStart();
+            FailedSaveDoesNotStartUnpersistedConfig();
             MaskedTokensAndSave();
             StartStopKeepsUiResponsive();
             HistoryViewShowsSavedAndLiveRecords();
@@ -25,7 +28,7 @@ internal static class GuiTests
             SourceFailureAppearsInWindow();
             WorkerFailureRestoresControls();
             ClosingWhileStoppingExits();
-            Console.WriteLine("PASS 12 GUI tests");
+            Console.WriteLine("PASS 15 GUI tests");
             return 0;
         }
         catch (Exception error) { Console.Error.WriteLine(error); return 1; }
@@ -40,6 +43,65 @@ internal static class GuiTests
                 form.Show(); Application.DoEvents();
                 Assert(Find<Label>(form, "StatusLabel").Text.Contains("待配置"), "invalid config visible");
                 Assert(!File.Exists(Path.Combine(Path.GetDirectoryName(path), "pending.json.lock")), "invalid config does not lock queue");
+                form.Close();
+            }
+        });
+    }
+
+    private static void IncompleteConfigSavePersistsUrl()
+    {
+        WithConfig(delegate(string path)
+        {
+            const string targetUrl = "http://192.0.2.1:8080";
+            using (CollectorForm form = new CollectorForm(path))
+            {
+                form.Show(); Application.DoEvents();
+                Find<TextBox>(form, "QmsBaseUrlBox").Text = targetUrl;
+                Find<Button>(form, "SaveButton").PerformClick();
+                Assert(Find<Label>(form, "StatusLabel").Text.Contains("配置已保存"), "incomplete configuration is saved as a draft");
+                Assert(Find<Label>(form, "StatusLabel").Text.Contains("网关令牌"), "incomplete configuration names the missing gateway token");
+                Assert(!Find<Button>(form, "StopButton").Enabled, "incomplete configuration does not start collector");
+                form.Close();
+            }
+            using (CollectorForm reopened = new CollectorForm(path))
+            {
+                Assert(Find<TextBox>(reopened, "QmsBaseUrlBox").Text == targetUrl, "QMS URL survives restart without gateway token");
+            }
+        });
+    }
+
+    private static void UnsavedEditCannotStart()
+    {
+        WithConfig(delegate(string path)
+        {
+            using (CollectorForm form = new CollectorForm(path))
+            {
+                form.Show(); Application.DoEvents();
+                Find<TextBox>(form, "QmsBaseUrlBox").Text = "http://192.0.2.2:8080";
+                Find<Button>(form, "StartButton").PerformClick();
+                Assert(Find<Label>(form, "StatusLabel").Text.Contains("未保存"), "start warns about unsaved edits");
+                Assert(!Find<Button>(form, "StopButton").Enabled, "unsaved edits do not start collector");
+                form.Close();
+            }
+        });
+    }
+
+    private static void FailedSaveDoesNotStartUnpersistedConfig()
+    {
+        WithConfig(delegate(string path)
+        {
+            using (CollectorForm form = new CollectorForm(path))
+            {
+                form.Show(); Application.DoEvents();
+                Find<TextBox>(form, "QmsBaseUrlBox").Text = "http://192.0.2.3:8080";
+                Find<TextBox>(form, "GatewayTokenBox").Text = "valid-test-token";
+                File.Delete(path);
+                Directory.CreateDirectory(path);
+                Find<Button>(form, "SaveButton").PerformClick();
+                Assert(Find<Label>(form, "StatusLabel").Text.Contains("保存失败"), "disk failure is shown as save failure");
+                Find<Button>(form, "StartButton").PerformClick();
+                Assert(Find<Label>(form, "StatusLabel").Text.Contains("未保存"), "failed save cannot start from in-memory settings");
+                Assert(!Find<Button>(form, "StopButton").Enabled, "failed save leaves collector stopped");
                 form.Close();
             }
         });

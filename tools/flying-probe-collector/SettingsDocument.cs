@@ -61,7 +61,6 @@ internal sealed class SettingsDocument
 
     public void Save()
     {
-        Validate();
         AtomicJson.Write(path, string.Join(Environment.NewLine, lines.ToArray()) + Environment.NewLine);
     }
 }

@@ -65,7 +65,7 @@ internal sealed class CollectorForm : Form
     {
         base.OnShown(e);
         try { document.Validate(); StartCollector(); }
-        catch (Exception error) { status.Text = "待配置: " + error.Message; }
+        catch (Exception error) { status.Text = "待配置: " + DescribeConfigurationError(error); }
     }
 
     protected override void OnFormClosing(FormClosingEventArgs e)
@@ -134,21 +134,29 @@ internal sealed class CollectorForm : Form
     {
         try
         {
-            document.Set("SourceRoot", source.Text.Trim());
-            document.Set("QmsBaseUrl", url.Text.Trim());
-            document.Set("GatewayToken", gateway.Text.Trim());
-            document.Set("BearerToken", bearer.Text.Trim());
-            document.Set("ScanIntervalSeconds", interval.Text.Trim());
-            document.Save();
-            status.Text = "配置已保存，可启动采集";
+            SettingsDocument updated = SettingsDocument.Load(configPath);
+            updated.Set("SourceRoot", source.Text.Trim());
+            updated.Set("QmsBaseUrl", url.Text.Trim());
+            updated.Set("GatewayToken", gateway.Text.Trim());
+            updated.Set("BearerToken", bearer.Text.Trim());
+            updated.Set("ScanIntervalSeconds", interval.Text.Trim());
+            updated.Save();
+            document = updated;
+            try { document.Validate(); status.Text = "配置已保存，可启动采集"; }
+            catch (Exception error) { status.Text = "配置已保存，尚不能启动: " + DescribeConfigurationError(error); }
             lastError.Text = "最近错误: 暂无";
         }
-        catch (Exception error) { status.Text = "待配置: " + error.Message; }
+        catch (Exception error) { status.Text = "保存失败: " + error.Message; }
     }
 
     private void StartCollector()
     {
         if (runtime != null && runtime.IsRunning) return;
+        if (HasUnsavedChanges())
+        {
+            status.Text = "配置未保存，请先保存配置";
+            return;
+        }
         try
         {
             Settings settings = document.Validate();
@@ -191,7 +199,23 @@ internal sealed class CollectorForm : Form
                 });
             });
         }
-        catch (Exception error) { status.Text = "待配置: " + error.Message; lastError.Text = "最近错误: " + error.GetType().Name; }
+        catch (Exception error) { status.Text = "待配置: " + DescribeConfigurationError(error); lastError.Text = "最近错误: " + error.GetType().Name; }
+    }
+
+    private static string DescribeConfigurationError(Exception error)
+    {
+        if (error.Message.StartsWith("GatewayToken must contain", StringComparison.Ordinal))
+            return "请填写真实网关令牌（不能使用模板占位值）";
+        return error.Message;
+    }
+
+    private bool HasUnsavedChanges()
+    {
+        return source.Text.Trim() != document.Get("SourceRoot", @"\\Scbgx\数字化\飞针机")
+            || url.Text.Trim() != document.Get("QmsBaseUrl", "")
+            || gateway.Text.Trim() != document.Get("GatewayToken", "")
+            || bearer.Text.Trim() != document.Get("BearerToken", "")
+            || interval.Text.Trim() != document.Get("ScanIntervalSeconds", "30");
     }
 
     private void StopCollector()
