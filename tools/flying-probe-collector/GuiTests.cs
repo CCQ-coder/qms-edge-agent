@@ -14,6 +14,8 @@ internal static class GuiTests
         try
         {
             InvalidConfigOpensWindow();
+            FirstRunWithoutIniOpensAndSaves();
+            ProbeIntervalOutOfRangeShowsChineseMessage();
             IncompleteConfigSavePersistsUrl();
             UnsavedEditCannotStart();
             FailedSaveDoesNotStartUnpersistedConfig();
@@ -28,7 +30,15 @@ internal static class GuiTests
             SourceFailureAppearsInWindow();
             WorkerFailureRestoresControls();
             ClosingWhileStoppingExits();
-            Console.WriteLine("PASS 15 GUI tests");
+            DeviceMappingSaveSurvivesRestart();
+            InvalidDeviceMappingDoesNotBlockTxtCollection();
+            HostEditingStopsDuringCollection();
+            UnmappedPresenceShowsPendingConfiguration();
+            UnsavedDraftDoesNotInheritSavedProbeResult();
+            RenamedDraftDoesNotKeepOldOnlineResult();
+            PresenceTimesUseLocalClock();
+            WindowKeepsHistoryAccessibleOnSmallScreens();
+            Console.WriteLine("PASS 24 GUI tests");
             return 0;
         }
         catch (Exception error) { Console.Error.WriteLine(error); return 1; }
@@ -43,6 +53,45 @@ internal static class GuiTests
                 form.Show(); Application.DoEvents();
                 Assert(Find<Label>(form, "StatusLabel").Text.Contains("待配置"), "invalid config visible");
                 Assert(!File.Exists(Path.Combine(Path.GetDirectoryName(path), "pending.json.lock")), "invalid config does not lock queue");
+                form.Close();
+            }
+        });
+    }
+
+    private static void FirstRunWithoutIniOpensAndSaves()
+    {
+        WithConfig(delegate(string path)
+        {
+            File.Delete(path);
+            using (CollectorForm form = new CollectorForm(path))
+            {
+                form.Show(); Application.DoEvents();
+                Assert(Find<Label>(form, "StatusLabel").Text.Contains("待配置"),
+                    "first launch without an INI stays open for configuration");
+                Find<Button>(form, "SaveButton").PerformClick();
+                Assert(File.Exists(path), "first save creates the live INI");
+                Assert(!Find<Button>(form, "StopButton").Enabled,
+                    "incomplete first-run configuration does not start collection");
+                form.Close();
+            }
+        });
+    }
+
+    private static void ProbeIntervalOutOfRangeShowsChineseMessage()
+    {
+        WithConfig(delegate(string path)
+        {
+            using (CollectorForm form = new CollectorForm(path))
+            {
+                form.Show(); Application.DoEvents();
+                SelectPresenceTab(form);
+                Find<TextBox>(form, "ProbeIntervalBox").Text = "241";
+                Find<Button>(form, "SaveHostsButton").PerformClick();
+                string message = Find<Label>(form, "HostConfigStatusLabel").Text;
+                Assert(message.Contains("探测间隔") && message.Contains("240 秒"),
+                    "probe interval range is explained in Chinese");
+                Assert(!File.Exists(Path.Combine(Path.GetDirectoryName(path), "FlyingProbeCollector.hosts.json")),
+                    "out-of-range probe interval is not saved");
                 form.Close();
             }
         });
@@ -388,6 +437,185 @@ internal static class GuiTests
             }
             finally { release.Set(); listener.Stop(); server.Join(1000); }
         });
+    }
+
+    private static void DeviceMappingSaveSurvivesRestart()
+    {
+        WithConfig(delegate(string path)
+        {
+            using (CollectorForm form = new CollectorForm(path))
+            {
+                form.Show(); Application.DoEvents();
+                SelectPresenceTab(form);
+                Find<Button>(form, "AddHostButton").PerformClick();
+                DataGridView grid = Find<DataGridView>(form, "HostsGrid");
+                Assert(grid.Rows.Count == 1, "new host row is visible");
+                grid.Rows[0].Cells["MachineName"].Value = "WTD-1";
+                grid.Rows[0].Cells["HostName"].Value = "probe-controller.local";
+                grid.Rows[0].Cells["ProbeMethod"].Value = "TCP";
+                grid.Rows[0].Cells["TcpPort"].Value = "445";
+                Find<Button>(form, "SaveHostsButton").PerformClick();
+                Assert(File.Exists(Path.Combine(Path.GetDirectoryName(path), "FlyingProbeCollector.hosts.json")),
+                    "host mapping is saved beside the selected INI");
+                form.Close();
+            }
+            using (CollectorForm reopened = new CollectorForm(path))
+            {
+                DataGridView grid = Find<DataGridView>(reopened, "HostsGrid");
+                Assert(grid.Rows.Count == 1, "saved mapping reloads after restart");
+                Assert(Convert.ToString(grid.Rows[0].Cells["HostName"].Value) == "probe-controller.local",
+                    "host name survives restart");
+                Assert(Convert.ToString(grid.Rows[0].Cells["ProbeMethod"].Value) == "TCP",
+                    "probe method survives restart");
+            }
+        });
+    }
+
+    private static void InvalidDeviceMappingDoesNotBlockTxtCollection()
+    {
+        WithConfig(delegate(string path)
+        {
+            using (CollectorForm form = new CollectorForm(path))
+            {
+                form.Show(); Application.DoEvents();
+                SelectPresenceTab(form);
+                Find<Button>(form, "AddHostButton").PerformClick();
+                DataGridView grid = Find<DataGridView>(form, "HostsGrid");
+                grid.Rows[0].Cells["MachineName"].Value = "WTD-2";
+                grid.Rows[0].Cells["HostName"].Value = "controller-two.local";
+                grid.Rows[0].Cells["ProbeMethod"].Value = "TCP";
+                grid.Rows[0].Cells["TcpPort"].Value = "70000";
+                Find<Button>(form, "SaveHostsButton").PerformClick();
+                Assert(!File.Exists(Path.Combine(Path.GetDirectoryName(path), "FlyingProbeCollector.hosts.json")),
+                    "invalid TCP port does not replace saved mapping");
+                Assert(Find<Label>(form, "HostConfigStatusLabel").Text.Contains("端口"),
+                    "invalid port is explained in the window");
+                Find<TextBox>(form, "GatewayTokenBox").Text = "test-gateway";
+                Find<Button>(form, "SaveButton").PerformClick();
+                Find<Button>(form, "StartButton").PerformClick();
+                WaitFor(delegate { return Find<Button>(form, "StopButton").Enabled; },
+                    "TXT collection still starts with an invalid unsaved host draft");
+                Find<Button>(form, "StopButton").PerformClick();
+                WaitFor(delegate { return !Find<Button>(form, "StopButton").Enabled; }, "TXT collection stops");
+                form.Close();
+            }
+        });
+    }
+
+    private static void HostEditingStopsDuringCollection()
+    {
+        WithConfig(delegate(string path)
+        {
+            string ini = File.ReadAllText(path).Replace("REPLACE_WITH_QMS_GATEWAY_TOKEN", "real-gateway");
+            File.WriteAllText(path, ini);
+            using (CollectorForm form = new CollectorForm(path))
+            {
+                form.Show(); Application.DoEvents();
+                SelectPresenceTab(form);
+                WaitFor(delegate { return Find<Button>(form, "StopButton").Enabled; }, "collector auto-starts");
+                Assert(!Find<Button>(form, "AddHostButton").Enabled, "host mappings cannot change while collecting");
+                Assert(!Find<Button>(form, "SaveHostsButton").Enabled, "host mappings cannot save while collecting");
+                Find<Button>(form, "StopButton").PerformClick();
+                WaitFor(delegate { return Find<Button>(form, "AddHostButton").Enabled; }, "host edit enabled after stop");
+                form.Close();
+            }
+        });
+    }
+
+    private static void UnmappedPresenceShowsPendingConfiguration()
+    {
+        using (DevicePresenceView view = new DevicePresenceView(new DeviceHosts(), delegate(DeviceHosts ignored) { }))
+        {
+            view.Update(new PresenceReport {
+                MachineName = "WTD-unmapped",
+                ObservedAt = new DateTimeOffset(2026, 10, 20, 12, 0, 0, TimeSpan.FromHours(8)),
+                NetworkState = "UNKNOWN",
+                SourceState = "READABLE"
+            }, null);
+            DataGridView grid = Find<DataGridView>(view, "HostsGrid");
+            Assert(grid.Rows.Count == 1, "discovered device appears without an explicit mapping");
+            Assert(Convert.ToString(grid.Rows[0].Cells["NetworkState"].Value) == "待配置",
+                "unmapped control computer is not called online");
+            Assert(!view.HasUnsavedChanges, "live status updates do not alter the saved host mapping");
+        }
+    }
+
+    private static void UnsavedDraftDoesNotInheritSavedProbeResult()
+    {
+        DeviceHosts hosts = new DeviceHosts();
+        hosts.Targets.Add(new HostTarget { MachineName = "WTD-1", HostName = "saved-host.local", Method = "ICMP" });
+        using (DevicePresenceView view = new DevicePresenceView(hosts, delegate(DeviceHosts ignored) { }))
+        {
+            DataGridView grid = Find<DataGridView>(view, "HostsGrid");
+            grid.Rows[0].Cells["HostName"].Value = "unsaved-host.local";
+            view.Update(new PresenceReport {
+                MachineName = "WTD-1", HostName = "saved-host.local",
+                ObservedAt = DateTimeOffset.Now, NetworkState = "ONLINE", SourceState = "READABLE"
+            }, new PresenceSendResult { HttpStatus = 200, Accepted = true });
+            Assert(Convert.ToString(grid.Rows[0].Cells["ActiveHostName"].Value) == "saved-host.local",
+                "window identifies the host that was actually probed");
+            Assert(Convert.ToString(grid.Rows[0].Cells["NetworkState"].Value) != "在线",
+                "unsaved host draft cannot borrow a saved host's online result");
+        }
+    }
+
+    private static void RenamedDraftDoesNotKeepOldOnlineResult()
+    {
+        DeviceHosts hosts = new DeviceHosts();
+        hosts.Targets.Add(new HostTarget { MachineName = "WTD-A", HostName = "saved-host.local", Method = "ICMP" });
+        using (DevicePresenceView view = new DevicePresenceView(hosts, delegate(DeviceHosts ignored) { }))
+        {
+            DataGridView grid = Find<DataGridView>(view, "HostsGrid");
+            PresenceReport report = new PresenceReport {
+                MachineName = "WTD-A", HostName = "saved-host.local",
+                ObservedAt = DateTimeOffset.Now, NetworkState = "ONLINE", SourceState = "READABLE"
+            };
+            view.Update(report, new PresenceSendResult { HttpStatus = 200, Accepted = true });
+            Assert(Convert.ToString(grid.Rows[0].Cells["NetworkState"].Value) == "在线",
+                "saved mapping initially displays online");
+            grid.Rows[0].Cells["MachineName"].Value = "WTD-B";
+            view.Update(report, new PresenceSendResult { HttpStatus = 200, Accepted = true });
+            Assert(Convert.ToString(grid.Rows[0].Cells["NetworkState"].Value) != "在线",
+                "renamed unsaved mapping cannot retain old online result");
+        }
+    }
+
+    private static void PresenceTimesUseLocalClock()
+    {
+        DateTimeOffset observed = new DateTimeOffset(2026, 10, 20, 1, 2, 3, TimeSpan.Zero);
+        DateTimeOffset changed = observed.AddMinutes(-5);
+        using (DevicePresenceView view = new DevicePresenceView(new DeviceHosts(), delegate(DeviceHosts ignored) { }))
+        {
+            view.Update(new PresenceReport {
+                MachineName = "WTD-2", ObservedAt = observed, LastTxtChangeAt = changed,
+                NetworkState = "UNKNOWN", SourceState = "READABLE"
+            }, null);
+            DataGridView grid = Find<DataGridView>(view, "HostsGrid");
+            Assert(Convert.ToString(grid.Rows[0].Cells["LastProbeAt"].Value) ==
+                observed.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss"), "probe time uses local clock");
+            Assert(Convert.ToString(grid.Rows[0].Cells["LastTxtChangeAt"].Value) ==
+                changed.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss"), "TXT time uses local clock");
+        }
+    }
+
+    private static void WindowKeepsHistoryAccessibleOnSmallScreens()
+    {
+        WithConfig(delegate(string path)
+        {
+            using (CollectorForm form = new CollectorForm(path))
+            {
+                Assert(form.MinimumSize.Height <= 720, "window fits a 768 pixel display");
+                TabControl tabs = Find<TabControl>(form, "ContentTabs");
+                Assert(tabs.TabPages.Count == 2, "history and device state have separate full-height tabs");
+            }
+        });
+    }
+
+    private static void SelectPresenceTab(CollectorForm form)
+    {
+        TabControl tabs = Find<TabControl>(form, "ContentTabs");
+        tabs.SelectedTab = Find<TabPage>(form, "PresenceTab");
+        Application.DoEvents();
     }
 
     private static void WithConfig(Action<string> test)

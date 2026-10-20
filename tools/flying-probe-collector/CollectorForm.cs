@@ -14,6 +14,10 @@ internal sealed class CollectorForm : Form
     private CollectorRuntime runtime;
     private SyncHistoryView historyView;
     private GroupBox historyGroup;
+    private GroupBox presenceGroup;
+    private DevicePresenceView presenceView;
+    private readonly string hostsPath;
+    private static readonly object logSync = new object();
     private readonly TextBox source = new TextBox { Name = "SourceRootBox" };
     private readonly TextBox url = new TextBox { Name = "QmsBaseUrlBox" };
     private readonly TextBox gateway = new TextBox { Name = "GatewayTokenBox", UseSystemPasswordChar = true };
@@ -40,6 +44,14 @@ internal sealed class CollectorForm : Form
         AutoScaleMode = AutoScaleMode.Dpi;
         BuildLayout();
         document = SettingsDocument.Load(this.configPath);
+        hostsPath = Path.Combine(Path.GetDirectoryName(this.configPath), "FlyingProbeCollector.hosts.json");
+        DeviceHosts hosts;
+        string hostsError = null;
+        try { hosts = DeviceHosts.Load(hostsPath); }
+        catch (Exception error) { hosts = new DeviceHosts(); hostsError = error.Message; }
+        presenceView = new DevicePresenceView(hosts, delegate(DeviceHosts updated) { updated.Save(hostsPath); });
+        presenceGroup.Controls.Add(presenceView);
+        if (hostsError != null) presenceView.ShowLoadError(hostsError);
         source.Text = document.Get("SourceRoot", @"\\Scbgx\数字化\飞针机");
         url.Text = document.Get("QmsBaseUrl", "");
         gateway.Text = document.Get("GatewayToken", "");
@@ -90,21 +102,21 @@ internal sealed class CollectorForm : Form
     private void BuildLayout()
     {
         TableLayoutPanel layout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 3, Padding = new Padding(12) };
-        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 264));
-        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 88));
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 240));
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 70));
         layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         Controls.Add(layout);
 
         GroupBox config = new GroupBox { Text = "采集配置", Dock = DockStyle.Fill, Padding = new Padding(10) };
         TableLayoutPanel grid = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 6 };
-        grid.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 120));
+        grid.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 190));
         grid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         for (int i = 0; i < 5; i++) grid.RowStyles.Add(new RowStyle(SizeType.Absolute, 36));
         grid.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         AddSetting(grid, 0, "采集目录", source);
         AddSetting(grid, 1, "QMS 地址", url);
         AddSetting(grid, 2, "网关令牌", gateway);
-        AddSetting(grid, 3, "Bearer Token", bearer);
+        AddSetting(grid, 3, "Bearer Token（网关模式不使用）", bearer);
         AddSetting(grid, 4, "扫描间隔(秒)", interval);
         FlowLayoutPanel buttons = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.LeftToRight, WrapContents = false };
         buttons.Controls.Add(save); buttons.Controls.Add(start); buttons.Controls.Add(stop);
@@ -119,8 +131,16 @@ internal sealed class CollectorForm : Form
         summary.Controls.Add(summaryFlow);
         layout.Controls.Add(summary, 0, 1);
 
+        TabControl tabs = new TabControl { Name = "ContentTabs", Dock = DockStyle.Fill };
+        TabPage historyTab = new TabPage { Name = "HistoryTab", Text = "同步记录" };
+        TabPage presenceTab = new TabPage { Name = "PresenceTab", Text = "飞针机设备状态" };
+        tabs.TabPages.Add(historyTab);
+        tabs.TabPages.Add(presenceTab);
+        layout.Controls.Add(tabs, 0, 2);
+        presenceGroup = new GroupBox { Text = "控制电脑网络与 TXT 活跃", Dock = DockStyle.Fill, Padding = new Padding(10) };
+        presenceTab.Controls.Add(presenceGroup);
         historyGroup = new GroupBox { Text = "同步记录", Dock = DockStyle.Fill, Padding = new Padding(10) };
-        layout.Controls.Add(historyGroup, 0, 2);
+        historyTab.Controls.Add(historyGroup);
     }
 
     private static void AddSetting(TableLayoutPanel grid, int row, string caption, TextBox box)
@@ -152,14 +172,17 @@ internal sealed class CollectorForm : Form
     private void StartCollector()
     {
         if (runtime != null && runtime.IsRunning) return;
-        if (HasUnsavedChanges())
+        if (HasUnsavedConfigurationChanges())
         {
             status.Text = "配置未保存，请先保存配置";
             return;
         }
+        if (HasUnsavedChanges()) presenceView.WarnUnsaved();
+        bool validated = false;
         try
         {
             Settings settings = document.Validate();
+            validated = true;
             if (settings.QmsBaseUrl.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
                 ServicePointManager.SecurityProtocol = (SecurityProtocolType)3072;
             runtime = new CollectorRuntime(settings, delegate(string message) { WriteLog(settings, message); },
@@ -183,6 +206,9 @@ internal sealed class CollectorForm : Form
                         { status.Text = "运行中 · 同步异常，等待重试"; lastError.Text = "最近错误: QMS 同步或本地历史写入失败"; }
                         else status.Text = "运行中";
                     });
+                }, delegate(PresenceReport report, PresenceSendResult result)
+                {
+                    Post(delegate { presenceView.Update(report, result); });
                 });
             runtime.Start();
             ToggleInputs(false);
@@ -199,7 +225,11 @@ internal sealed class CollectorForm : Form
                 });
             });
         }
-        catch (Exception error) { status.Text = "待配置: " + DescribeConfigurationError(error); lastError.Text = "最近错误: " + error.GetType().Name; }
+        catch (Exception error)
+        {
+            status.Text = (validated ? "已停止: " : "待配置: ") + DescribeConfigurationError(error);
+            lastError.Text = "最近错误: " + error.GetType().Name;
+        }
     }
 
     private static string DescribeConfigurationError(Exception error)
@@ -210,6 +240,11 @@ internal sealed class CollectorForm : Form
     }
 
     private bool HasUnsavedChanges()
+    {
+        return HasUnsavedConfigurationChanges() || (presenceView != null && presenceView.HasUnsavedChanges);
+    }
+
+    private bool HasUnsavedConfigurationChanges()
     {
         return source.Text.Trim() != document.Get("SourceRoot", @"\\Scbgx\数字化\飞针机")
             || url.Text.Trim() != document.Get("QmsBaseUrl", "")
@@ -239,6 +274,7 @@ internal sealed class CollectorForm : Form
     {
         foreach (TextBox box in new TextBox[] { source, url, gateway, bearer, interval }) box.Enabled = enabled;
         save.Enabled = enabled; start.Enabled = enabled; stop.Enabled = !enabled;
+        if (presenceView != null) presenceView.SetEditable(enabled);
     }
 
     private void Post(Action action)
@@ -252,6 +288,6 @@ internal sealed class CollectorForm : Form
     {
         string line = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss.fff", CultureInfo.InvariantCulture) + " " + message;
         Directory.CreateDirectory(Path.GetDirectoryName(settings.LogFile));
-        File.AppendAllText(settings.LogFile, line + Environment.NewLine, Encoding.UTF8);
+        lock (logSync) File.AppendAllText(settings.LogFile, line + Environment.NewLine, Encoding.UTF8);
     }
 }

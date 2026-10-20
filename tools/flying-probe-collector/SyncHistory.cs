@@ -66,16 +66,16 @@ internal sealed class SyncHistory
     public void Append(SyncRecord record)
     {
         if (record == null) throw new ArgumentNullException("record");
-        record.Response = Limit(Redact(record.Response ?? ""), 8192);
-        record.Request = Redact(record.Request ?? "");
-        record.RecordNo = Redact(record.RecordNo ?? "");
-        record.Machine = Redact(record.Machine ?? "");
-        record.Material = Redact(record.Material ?? "");
-        record.LastTestTime = Redact(record.LastTestTime ?? "");
-        string json = Redact(serializer.Serialize(record));
-        string path = Path.Combine(directory, record.Time.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture) + ".jsonl");
         lock (appendLock)
         {
+            record.Response = Limit(Redact(record.Response ?? ""), 8192);
+            record.Request = Redact(record.Request ?? "");
+            record.RecordNo = Redact(record.RecordNo ?? "");
+            record.Machine = Redact(record.Machine ?? "");
+            record.Material = Redact(record.Material ?? "");
+            record.LastTestTime = Redact(record.LastTestTime ?? "");
+            string json = Redact(serializer.Serialize(record));
+            string path = Path.Combine(directory, record.Time.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture) + ".jsonl");
             Directory.CreateDirectory(directory);
             using (FileStream stream = new FileStream(path, FileMode.Append, FileAccess.Write, FileShare.ReadWrite))
             using (StreamWriter writer = new StreamWriter(stream, new UTF8Encoding(false)))
@@ -103,7 +103,7 @@ internal sealed class SyncHistory
             {
                 try
                 {
-                    SyncRecord record = serializer.Deserialize<SyncRecord>(line);
+                    SyncRecord record = new JavaScriptSerializer { MaxJsonLength = int.MaxValue }.Deserialize<SyncRecord>(line);
                     if (record == null || record.Time == default(DateTime) || string.IsNullOrEmpty(record.Stage))
                         throw new InvalidDataException("Invalid history row.");
                     if (record.Time.Kind == DateTimeKind.Utc)

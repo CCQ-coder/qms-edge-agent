@@ -17,6 +17,7 @@ internal sealed class Settings
     public string QueueFile;
     public string CheckpointFile;
     public string LogFile;
+    public string HostsFile;
 
     public static Settings Load(string path)
     {
@@ -37,6 +38,7 @@ internal sealed class Settings
         result.QueueFile = ResolvePath(baseDirectory, Read(values, "QueueFile", @".\data\pending-events.json"));
         result.CheckpointFile = ResolvePath(baseDirectory, Read(values, "CheckpointFile", @".\data\scan-checkpoints.json"));
         result.LogFile = ResolvePath(baseDirectory, Read(values, "LogFile", @".\logs\flying-probe-collector.log"));
+        result.HostsFile = Path.Combine(baseDirectory, "FlyingProbeCollector.hosts.json");
 
         Uri qms;
         if (!Uri.TryCreate(result.QmsBaseUrl, UriKind.Absolute, out qms) ||
@@ -96,13 +98,17 @@ internal static class Program
             Settings settings = Settings.Load(configPath);
             if (settings.QmsBaseUrl.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
                 ServicePointManager.SecurityProtocol = (SecurityProtocolType)3072;
+            object logGate = new object();
             Action<string> log = delegate(string message)
             {
-                string line = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss.fff", CultureInfo.InvariantCulture) + " " + message;
-                string directory = Path.GetDirectoryName(settings.LogFile);
-                if (!Directory.Exists(directory)) Directory.CreateDirectory(directory);
-                File.AppendAllText(settings.LogFile, line + Environment.NewLine, Encoding.UTF8);
-                Console.WriteLine(line);
+                lock (logGate)
+                {
+                    string line = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss.fff", CultureInfo.InvariantCulture) + " " + message;
+                    string directory = Path.GetDirectoryName(settings.LogFile);
+                    if (!Directory.Exists(directory)) Directory.CreateDirectory(directory);
+                    File.AppendAllText(settings.LogFile, line + Environment.NewLine, Encoding.UTF8);
+                    Console.WriteLine(line);
+                }
             };
             CollectorRuntime runtime = new CollectorRuntime(settings, log, null, null);
             stopping = false;

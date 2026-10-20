@@ -10,6 +10,7 @@ internal sealed class ProbeScanner
     private readonly ScanCheckpointStore checkpoints;
     private readonly Action<string> log;
     private readonly Action<SyncRecord> onRecord;
+    private readonly ScanSummary summary;
     public bool LastScanHadError { get; private set; }
     private readonly Dictionary<string, FileStamp> observed = new Dictionary<string, FileStamp>(StringComparer.OrdinalIgnoreCase);
 
@@ -26,12 +27,19 @@ internal sealed class ProbeScanner
 
     public ProbeScanner(string root, PendingEventStore pending, ScanCheckpointStore checkpoints, Action<string> log,
         Action<SyncRecord> onRecord)
+        : this(root, pending, checkpoints, log, onRecord, null)
+    {
+    }
+
+    public ProbeScanner(string root, PendingEventStore pending, ScanCheckpointStore checkpoints, Action<string> log,
+        Action<SyncRecord> onRecord, ScanSummary summary)
     {
         this.root = root;
         this.pending = pending;
         this.checkpoints = checkpoints;
         this.log = log;
         this.onRecord = onRecord;
+        this.summary = summary;
     }
 
     public void ScanOnce()
@@ -48,14 +56,22 @@ internal sealed class ProbeScanner
         try
         {
             directories = Directory.GetDirectories(root);
+            if (summary != null)
+            {
+                List<string> present = new List<string>();
+                foreach (string directory in directories) present.Add(Path.GetFileName(directory));
+                summary.MarkRootReadable(DateTime.UtcNow, present);
+            }
         }
         catch (IOException error)
         {
+            if (summary != null) summary.MarkRootUnreadable(DateTime.UtcNow);
             Issue("Source directory unavailable: " + error.Message);
             return;
         }
         catch (UnauthorizedAccessException error)
         {
+            if (summary != null) summary.MarkRootUnreadable(DateTime.UtcNow);
             Issue("Source directory inaccessible: " + error.Message);
             return;
         }
@@ -63,18 +79,22 @@ internal sealed class ProbeScanner
         foreach (string directory in directories)
         {
             if (shouldStop()) return;
+            string machine = Path.GetFileName(directory);
             string[] files;
             try
             {
                 files = Directory.GetFiles(directory);
+                if (summary != null) summary.MarkReadable(machine, DateTime.UtcNow);
             }
             catch (IOException error)
             {
+                if (summary != null) summary.MarkUnreadable(machine, DateTime.UtcNow);
                 Issue("Device directory unavailable: " + directory + ": " + error.Message);
                 continue;
             }
             catch (UnauthorizedAccessException error)
             {
+                if (summary != null) summary.MarkUnreadable(machine, DateTime.UtcNow);
                 Issue("Device directory inaccessible: " + directory + ": " + error.Message);
                 continue;
             }
@@ -96,6 +116,8 @@ internal sealed class ProbeScanner
         info.Refresh();
         if (!info.Exists) return;
         FileStamp stamp = new FileStamp { Length = info.Length, LastWriteUtc = info.LastWriteTimeUtc };
+        if (summary != null) summary.ObserveFile(Path.GetFileName(directory), Path.GetFileName(file),
+            stamp.Length, stamp.LastWriteUtc, DateTime.UtcNow);
         FileStamp previous;
         bool seen = observed.TryGetValue(file, out previous);
         observed[file] = stamp;

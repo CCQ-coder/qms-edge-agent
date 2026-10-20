@@ -97,7 +97,8 @@ internal sealed class QmsSender
         request.AllowAutoRedirect = false;
         request.ServicePoint.Expect100Continue = false;
         request.Headers["X-Gateway-Token"] = gatewayToken;
-        if (!string.IsNullOrEmpty(bearerToken)) request.Headers[HttpRequestHeader.Authorization] = "Bearer " + bearerToken;
+        if (string.IsNullOrWhiteSpace(gatewayToken) && !string.IsNullOrEmpty(bearerToken))
+            request.Headers[HttpRequestHeader.Authorization] = "Bearer " + bearerToken;
         request.ContentLength = bytes.Length;
         using (Timer deadline = new Timer(delegate { request.Abort(); }, null, timeoutSeconds * 1000, Timeout.Infinite))
         {

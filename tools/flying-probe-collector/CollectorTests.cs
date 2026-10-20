@@ -9,6 +9,7 @@ using System.Net.Sockets;
 using System.Reflection;
 using System.Text;
 using System.Threading;
+using System.Threading.Tasks;
 using System.Web.Script.Serialization;
 
 internal static class CollectorTests
@@ -39,12 +40,30 @@ internal static class CollectorTests
             Run("RedirectRetainsEvent", RedirectRetainsEvent);
             Run("NoBearerWhenEmpty", NoBearerWhenEmpty);
             Run("LoadSettingsRelativeToIni", LoadSettingsRelativeToIni);
+            Run("HostsFollowConfigDirectory", HostsFollowConfigDirectory);
+            Run("HostMapSaveIsAtomicAndValidatesPort", HostMapSaveIsAtomicAndValidatesPort);
+            Run("HostMapAccepts240SecondProbeInterval", HostMapAccepts240SecondProbeInterval);
+            Run("HostMapRejects241SecondProbeInterval", HostMapRejects241SecondProbeInterval);
+            Run("ScanSummaryUsesObservedChangesAndExpires", ScanSummaryUsesObservedChangesAndExpires);
+            Run("ScannerKeepsDirectoryReadableOnBadTxt", ScannerKeepsDirectoryReadableOnBadTxt);
+            Run("ConcurrentQueueUpdatesRemainDurable", ConcurrentQueueUpdatesRemainDurable);
+            Run("PresenceRequiresThreeFailuresAndRecovers", PresenceRequiresThreeFailuresAndRecovers);
+            Run("NetworkProbeResolvesHostEachAttempt", NetworkProbeResolvesHostEachAttempt);
+            Run("SaturatedProbeSlotsDoNotFailUnattemptedHost", SaturatedProbeSlotsDoNotFailUnattemptedHost);
+            Run("ProbeCoordinatorDoesNotStackTimedOutHost", ProbeCoordinatorDoesNotStackTimedOutHost);
+            Run("PresencePostUsesGatewayAndOffsetTime", PresencePostUsesGatewayAndOffsetTime);
+            Run("PresenceFailureDoesNotGrowTelemetryQueue", PresenceFailureDoesNotGrowTelemetryQueue);
+            Run("PresenceUnexpectedRequestErrorIsIsolated", PresenceUnexpectedRequestErrorIsIsolated);
             Run("HistorySurvivesRestart", HistorySurvivesRestart);
             Run("HistoryReadShowsUtcPlusEight", HistoryReadShowsUtcPlusEight);
             Run("MalformedHistoryLineIsReported", MalformedHistoryLineIsReported);
             Run("AcceptedWithoutHistoryStaysQueued", AcceptedWithoutHistoryStaysQueued);
             Run("HistoryNeverContainsTokens", HistoryNeverContainsTokens);
             Run("RuntimeStartStopReleasesLock", RuntimeStartStopReleasesLock);
+            Run("RuntimeReportsPresenceWithoutTelemetryHistory", RuntimeReportsPresenceWithoutTelemetryHistory);
+            Run("StopBeforePresenceDispatchSkipsRequest", StopBeforePresenceDispatchSkipsRequest);
+            Run("PresenceReportNeverPlacesTxtChangeAfterProbe", PresenceReportNeverPlacesTxtChangeAfterProbe);
+            Run("MissingDeviceDirectoryIsUnreadable", MissingDeviceDirectoryIsUnreadable);
             Run("StopDuringScanKeepsUnprocessedFiles", StopDuringScanKeepsUnprocessedFiles);
             Run("StopDoesNotSendNextPendingEvent", StopDoesNotSendNextPendingEvent);
             Run("SlowResponseHonorsOverallTimeout", SlowResponseHonorsOverallTimeout);
@@ -387,7 +406,7 @@ internal static class CollectorTests
                 CapturedRequest request = server.Requests[0];
                 Assert(request.FirstLine == "POST /api/v1/equipment/telemetry HTTP/1.1", "telemetry endpoint and method");
                 Assert(request.Headers["X-Gateway-Token"] == "gateway-secret", "gateway token header");
-                Assert(request.Headers["Authorization"] == "Bearer bearer-secret", "bearer header");
+                Assert(!request.Headers.ContainsKey("Authorization"), "gateway telemetry omits stale bearer");
                 Dictionary<string, object> payload = new JavaScriptSerializer().DeserializeObject(request.Body) as Dictionary<string, object>;
                 IList events = payload == null ? null : payload["events"] as IList;
                 Assert(events != null && events.Count == 1, "one event in wrapper");
@@ -502,6 +521,314 @@ internal static class CollectorTests
         });
     }
 
+    private static void HostsFollowConfigDirectory()
+    {
+        InTempDirectory(delegate(string directory)
+        {
+            string config = Path.Combine(directory, "FlyingProbeCollector.ini");
+            File.WriteAllText(config, "QmsBaseUrl=http://127.0.0.1:8080\r\nGatewayToken=test-token\r\n");
+            Settings settings = Settings.Load(config);
+            Assert(settings.HostsFile == Path.GetFullPath(Path.Combine(directory, "FlyingProbeCollector.hosts.json")),
+                "host map follows selected INI instead of current working directory");
+            DeviceHosts empty = DeviceHosts.Load(settings.HostsFile);
+            Assert(empty.Targets.Count == 0 && empty.ProbeIntervalSeconds == 60 && empty.FailureThreshold == 3,
+                "missing map is safe and defaults are operational");
+        });
+    }
+
+    private static void HostMapSaveIsAtomicAndValidatesPort()
+    {
+        InTempDirectory(delegate(string directory)
+        {
+            string path = Path.Combine(directory, "FlyingProbeCollector.hosts.json");
+            DeviceHosts hosts = new DeviceHosts();
+            hosts.Targets.Add(new HostTarget { MachineName = "WTD-1", HostName = "wtd-1.local", Method = "TCP", TcpPort = 9000 });
+            hosts.Save(path);
+            string goodJson = File.ReadAllText(path);
+            Assert(DeviceHosts.Load(path).Targets[0].HostName == "wtd-1.local", "saved mapping reloads");
+            hosts.Targets[0].TcpPort = 0;
+            AssertThrowsArgument(delegate { hosts.Save(path); }, "TCP without port is rejected");
+            Assert(File.ReadAllText(path) == goodJson, "invalid edit does not overwrite saved map");
+            File.WriteAllText(path, "{broken json");
+            AssertThrowsInvalidData(delegate { DeviceHosts.Load(path); }, "corrupt mapping detected");
+            Assert(File.ReadAllText(path) == "{broken json", "corrupt map not rewritten");
+        });
+    }
+
+    private static void HostMapAccepts240SecondProbeInterval()
+    {
+        InTempDirectory(delegate(string directory)
+        {
+            string path = Path.Combine(directory, "FlyingProbeCollector.hosts.json");
+            DeviceHosts hosts = new DeviceHosts();
+            hosts.ProbeIntervalSeconds = 240;
+            hosts.Save(path);
+            Assert(DeviceHosts.Load(path).ProbeIntervalSeconds == 240, "four-minute probe interval persists");
+        });
+    }
+
+    private static void HostMapRejects241SecondProbeInterval()
+    {
+        InTempDirectory(delegate(string directory)
+        {
+            string path = Path.Combine(directory, "FlyingProbeCollector.hosts.json");
+            DeviceHosts hosts = new DeviceHosts();
+            hosts.Save(path);
+            string original = File.ReadAllText(path);
+            hosts.ProbeIntervalSeconds = 241;
+            AssertThrowsArgument(delegate { hosts.Save(path); }, "probe interval above four minutes is rejected");
+            Assert(File.ReadAllText(path) == original, "invalid probe interval does not overwrite saved map");
+        });
+    }
+
+    private static void ScanSummaryUsesObservedChangesAndExpires()
+    {
+        ScanSummary summary = new ScanSummary();
+        DateTime first = new DateTime(2026, 10, 20, 8, 0, 0, DateTimeKind.Utc);
+        summary.MarkRootReadable(first);
+        summary.MarkReadable("WTD-1", first);
+        summary.ObserveFile("WTD-1", "WTD-1/part.txt", 10, first.AddDays(-2), first);
+        Assert(summary.Get("WTD-1", first).SourceState == "READABLE", "first successful scan is readable");
+        Assert(!summary.Get("WTD-1", first).LastTxtChangeUtc.HasValue, "first sight of old file does not imply running");
+        summary.ObserveFile("WTD-1", "WTD-1/part.txt", 11, first.AddDays(-2), first.AddSeconds(30));
+        Assert(summary.Get("WTD-1", first.AddSeconds(30)).LastTxtChangeUtc == first.AddSeconds(30),
+            "local observation time marks changed TXT metadata");
+        Assert(summary.Get("WTD-1", first.AddSeconds(301)).SourceState == "UNKNOWN", "scan becomes stale after 300 seconds");
+        summary.MarkRootUnreadable(first.AddSeconds(302));
+        Assert(summary.Get("WTD-1", first.AddSeconds(302)).SourceState == "UNREADABLE", "root failure affects known machine");
+    }
+
+    private static void ScannerKeepsDirectoryReadableOnBadTxt()
+    {
+        InTempDirectory(delegate(string directory)
+        {
+            string root = Path.Combine(directory, "source");
+            string device = Path.Combine(root, "WTD-1");
+            Directory.CreateDirectory(device);
+            File.WriteAllText(Path.Combine(device, "bad.txt"), "Test_Counters 1 2");
+            ScanSummary summary = new ScanSummary();
+            ProbeScanner scanner = new ProbeScanner(root,
+                new PendingEventStore(Path.Combine(directory, "pending.json")),
+                new ScanCheckpointStore(Path.Combine(directory, "checkpoint.json")),
+                delegate(string message) { }, null, summary);
+            scanner.ScanOnce(); scanner.ScanOnce();
+            Assert(scanner.LastScanHadError, "bad TXT is still a sync error");
+            Assert(summary.Get("WTD-1", DateTime.UtcNow).SourceState == "READABLE",
+                "bad TXT content does not make directory unreadable");
+        });
+    }
+
+    private static void MissingDeviceDirectoryIsUnreadable()
+    {
+        InTempDirectory(delegate(string directory)
+        {
+            string root = Path.Combine(directory, "source");
+            string device = Path.Combine(root, "WTD-1");
+            Directory.CreateDirectory(device);
+            File.WriteAllText(Path.Combine(device, "old.txt"), "Test_Counters 1 1 0 01:00:00");
+            ScanSummary summary = new ScanSummary();
+            ProbeScanner scanner = new ProbeScanner(root,
+                new PendingEventStore(Path.Combine(directory, "pending.json")),
+                new ScanCheckpointStore(Path.Combine(directory, "checkpoint.json")),
+                delegate(string message) { }, null, summary);
+            scanner.ScanOnce();
+            Assert(summary.Get("WTD-1", DateTime.UtcNow).SourceState == "READABLE", "present device directory is readable");
+            Assert(!summary.Get("WTD-1", DateTime.UtcNow).LastTxtChangeUtc.HasValue,
+                "first sight of old TXT remains a baseline");
+            Directory.Delete(device, true);
+            scanner.ScanOnce();
+            SourceSnapshot afterRemoval = summary.Get("WTD-1", DateTime.UtcNow);
+            Assert(afterRemoval.SourceState == "UNREADABLE", "missing device directory loses readable status immediately");
+            Assert(!afterRemoval.LastTxtChangeUtc.HasValue, "directory removal is not TXT activity");
+        });
+    }
+
+    private static void ConcurrentQueueUpdatesRemainDurable()
+    {
+        InTempDirectory(delegate(string directory)
+        {
+            string path = Path.Combine(directory, "pending.json");
+            PendingEventStore store = new PendingEventStore(path);
+            Task[] tasks = new Task[24];
+            for (int index = 0; index < tasks.Length; index++)
+            {
+                int id = index;
+                tasks[index] = Task.Run(delegate { store.Enqueue(EventWithRecord("R-" + id)); });
+            }
+            Task.WaitAll(tasks);
+            Assert(store.Snapshot().Count == 24, "parallel producers keep all unique records");
+            Task[] removals = new Task[12];
+            for (int index = 0; index < removals.Length; index++)
+            {
+                int id = index;
+                removals[index] = Task.Run(delegate { store.Remove("R-" + id); });
+            }
+            Task.WaitAll(removals);
+            Assert(new PendingEventStore(path).Snapshot().Count == 12, "parallel removals persist exact remainder");
+        });
+    }
+
+    private static void PresenceRequiresThreeFailuresAndRecovers()
+    {
+        PresenceTracker tracker = new PresenceTracker(3);
+        DateTime now = DateTime.UtcNow;
+        Assert(tracker.Observe("WTD-1", false, now) == "UNKNOWN", "initial failure one is unconfirmed");
+        Assert(tracker.Observe("WTD-1", false, now.AddSeconds(1)) == "UNKNOWN", "initial failure two is unconfirmed");
+        Assert(tracker.Observe("WTD-1", false, now.AddSeconds(2)) == "OFFLINE", "third failure is offline");
+        Assert(tracker.Observe("WTD-1", true, now.AddSeconds(3)) == "ONLINE", "one success restores online");
+        Assert(tracker.Observe("WTD-1", false, now.AddSeconds(4)) == "ONLINE", "short loss keeps online");
+        Assert(tracker.Observe("WTD-1", false, now.AddSeconds(5)) == "ONLINE", "second short loss keeps online");
+        Assert(tracker.Observe("WTD-1", false, now.AddSeconds(6)) == "OFFLINE", "third loss sets offline");
+        Assert(tracker.Observe("WTD-1", null, now.AddSeconds(7)) == "UNKNOWN", "removed host mapping is unconfirmed");
+    }
+
+    private static void NetworkProbeResolvesHostEachAttempt()
+    {
+        int resolutions = 0;
+        List<IPAddress> dialed = new List<IPAddress>();
+        NetworkProbe probe = new NetworkProbe(
+            delegate(string name) {
+                Assert(name == "wtd-1.local", "configured hostname used");
+                resolutions++;
+                return new IPAddress[] { IPAddress.Parse(resolutions == 1 ? "10.0.0.1" : "10.0.0.2") };
+            },
+            delegate(IPAddress address, HostTarget target, int timeout) {
+                dialed.Add(address);
+                return target.Method == "TCP" && target.TcpPort == 9000 && timeout > 0;
+            });
+        HostTarget host = new HostTarget { MachineName = "WTD-1", HostName = "wtd-1.local", Method = "TCP", TcpPort = 9000 };
+        Assert(probe.Probe(host, 3000, delegate { return false; }) == true, "first TCP probe succeeds");
+        Assert(probe.Probe(host, 3000, delegate { return false; }) == true, "second TCP probe succeeds");
+        Assert(resolutions == 2 && dialed[0].ToString() == "10.0.0.1" && dialed[1].ToString() == "10.0.0.2",
+            "DHCP replacement resolved on each probe");
+    }
+
+    private static void ProbeCoordinatorDoesNotStackTimedOutHost()
+    {
+        using (ManualResetEvent release = new ManualResetEvent(false))
+        {
+            SlowHostProbe fake = new SlowHostProbe(release);
+            HostProbeCoordinator coordinator = new HostProbeCoordinator(fake, 100, 4);
+            HostTarget slow = new HostTarget { MachineName = "WTD-1", HostName = "slow.local", Method = "ICMP" };
+            HostTarget fast = new HostTarget { MachineName = "WTD-2", HostName = "fast.local", Method = "ICMP" };
+            IDictionary<string, bool?> first = coordinator.Probe(new HostTarget[] { slow, fast }, delegate { return false; });
+            Assert(first["WTD-1"] == false && first["WTD-2"] == true,
+                "slow DNS budget does not hold healthy peer");
+            IDictionary<string, bool?> second = coordinator.Probe(new HostTarget[] { slow, fast }, delegate { return false; });
+            Assert(second["WTD-1"] == null && second["WTD-2"] == true && fake.SlowAttempts == 1,
+                "ongoing timed-out probe is not counted as another failure");
+            release.Set();
+        }
+    }
+
+    private static void SaturatedProbeSlotsDoNotFailUnattemptedHost()
+    {
+        using (ManualResetEvent release = new ManualResetEvent(false))
+        {
+            HostProbeCoordinator coordinator = new HostProbeCoordinator(new SaturatedHostProbe(release), 100, 4);
+            HostTarget[] targets = new HostTarget[5];
+            for (int index = 0; index < targets.Length; index++)
+                targets[index] = new HostTarget { MachineName = "WTD-" + (index + 1), HostName = "host.local", Method = "ICMP" };
+            PresenceTracker tracker = new PresenceTracker(3);
+            DateTime now = DateTime.UtcNow;
+            for (int cycle = 0; cycle < 3; cycle++)
+            {
+                IDictionary<string, bool?> results = coordinator.Probe(targets, delegate { return false; });
+                Assert(results["WTD-5"] == null, "host waiting for a free probe slot has no failed observation");
+                Assert(tracker.Observe("WTD-5", results["WTD-5"], now.AddMinutes(cycle)) == "UNKNOWN",
+                    "unattempted host cannot become offline after three saturated cycles");
+            }
+            release.Set();
+        }
+    }
+
+    private sealed class SlowHostProbe : IHostProbe
+    {
+        private readonly ManualResetEvent release;
+        private int slowAttempts;
+        public int SlowAttempts { get { return slowAttempts; } }
+        public SlowHostProbe(ManualResetEvent release) { this.release = release; }
+        public bool? Probe(HostTarget target, int timeoutMilliseconds, Func<bool> shouldStop)
+        {
+            if (target.MachineName == "WTD-2") return true;
+            Interlocked.Increment(ref slowAttempts);
+            release.WaitOne(2000);
+            return true;
+        }
+    }
+
+    private sealed class SaturatedHostProbe : IHostProbe
+    {
+        private readonly ManualResetEvent release;
+        public SaturatedHostProbe(ManualResetEvent release) { this.release = release; }
+        public bool? Probe(HostTarget target, int timeoutMilliseconds, Func<bool> shouldStop)
+        {
+            if (target.MachineName == "WTD-5") return true;
+            release.WaitOne(2000);
+            return true;
+        }
+    }
+
+    private static void PresencePostUsesGatewayAndOffsetTime()
+    {
+        using (HttpFixture server = new HttpFixture(200))
+        {
+            server.ResponseBody = "{\"data\":{\"accepted\":true,\"equipmentId\":\"E-1\"}}";
+            PresenceReport report = new PresenceReport {
+                MachineName = "WTD-1", ObservedAt = new DateTimeOffset(2026, 10, 20, 16, 0, 0, TimeSpan.FromHours(8)),
+                NetworkState = "ONLINE", SourceState = "READABLE",
+                LastTxtChangeAt = new DateTimeOffset(2026, 10, 20, 15, 55, 0, TimeSpan.FromHours(8))
+            };
+            PresenceSendResult result = new PresenceSender(server.BaseUrl, "gateway-secret", 2).Send(report);
+            server.WaitForRequests();
+            Assert(result.Accepted && result.HttpStatus == 200, "explicit accepted response reported");
+            CapturedRequest request = server.Requests[0];
+            Assert(request.FirstLine == "POST /api/v1/equipment/presence/flying-probe HTTP/1.1", "dedicated presence endpoint");
+            Assert(request.Headers["X-Gateway-Token"] == "gateway-secret" && !request.Headers.ContainsKey("Authorization"),
+                "gateway request has no JWT bearer");
+            Dictionary<string, object> body = new JavaScriptSerializer().DeserializeObject(request.Body) as Dictionary<string, object>;
+            Assert(body != null && !body.ContainsKey("events") && Text(body, "machineName") == "WTD-1",
+                "presence is a single state rather than telemetry batch");
+            Assert(Text(body, "observedAt") == "2026-10-20T16:00:00+08:00" &&
+                Text(body, "lastTxtChangeAt") == "2026-10-20T15:55:00+08:00", "offset times retained");
+        }
+    }
+
+    private static void PresenceFailureDoesNotGrowTelemetryQueue()
+    {
+        InTempDirectory(delegate(string directory)
+        {
+            string queuePath = Path.Combine(directory, "pending.json");
+            PendingEventStore queue = new PendingEventStore(queuePath);
+            queue.Enqueue(EventWithRecord("R-1"));
+            using (HttpFixture server = new HttpFixture(401))
+            {
+                server.ResponseBody = "bad gateway-secret token";
+                PresenceReport report = new PresenceReport {
+                    MachineName = "WTD-1", ObservedAt = DateTimeOffset.UtcNow,
+                    NetworkState = "UNKNOWN", SourceState = "UNKNOWN"
+                };
+                PresenceSendResult result = new PresenceSender(server.BaseUrl, "gateway-secret", 2).Send(report);
+                server.WaitForRequests();
+                Assert(!result.Accepted && result.HttpStatus == 401, "rejected status surfaced");
+                Assert(!result.Error.Contains("gateway-secret"), "QMS echo cannot leak gateway secret");
+                Assert(new PendingEventStore(queuePath).Snapshot().Count == 1,
+                    "presence failure never appends to or removes from telemetry queue");
+            }
+        });
+    }
+
+    private static void PresenceUnexpectedRequestErrorIsIsolated()
+    {
+        PresenceReport report = new PresenceReport {
+            MachineName = "WTD-1", ObservedAt = DateTimeOffset.UtcNow,
+            NetworkState = "ONLINE", SourceState = "READABLE"
+        };
+        PresenceSendResult result = new PresenceSender("invalid-url", "gateway-secret", 2).Send(report);
+        Assert(!result.Accepted && result.HttpStatus == 0 && result.Error == "UriFormatException",
+            "unexpected request creation failure becomes one device result, without exposing tokens");
+    }
+
     private static void HistorySurvivesRestart()
     {
         InTempDirectory(delegate(string directory)
@@ -592,6 +919,111 @@ internal static class CollectorTests
             Assert(runtime.StopAsync().Wait(5000), "runtime stops promptly");
             using (new CollectorOwnership(settings.QueueFile)) { }
         });
+    }
+
+    private static void RuntimeReportsPresenceWithoutTelemetryHistory()
+    {
+        InTempDirectory(delegate(string directory)
+        {
+            using (HttpFixture server = new HttpFixture(200))
+            using (ManualResetEvent delivered = new ManualResetEvent(false))
+            {
+                server.ResponseBody = "{\"data\":{\"accepted\":true,\"equipmentId\":\"E-1\"}}";
+                Settings settings = RuntimeSettings(directory, server.BaseUrl);
+                DeviceHosts hosts = new DeviceHosts();
+                hosts.Targets.Add(new HostTarget { MachineName = "WTD-1", HostName = "wtd-1.local", Method = "ICMP" });
+                hosts.Save(settings.HostsFile);
+                PresenceReport observed = null;
+                PresenceSendResult sent = null;
+                CollectorRuntime runtime = new CollectorRuntime(settings, delegate(string line) { }, null, null, null,
+                    delegate(PresenceReport report, PresenceSendResult result) {
+                        observed = report; sent = result; delivered.Set();
+                    }, new ConstantHostProbe(true));
+                runtime.Start();
+                Assert(delivered.WaitOne(5000), "presence sent on independent worker");
+                Assert(runtime.StopAsync().Wait(5000), "all workers stop");
+                server.WaitForRequests();
+                Assert(observed != null && observed.MachineName == "WTD-1" && observed.NetworkState == "ONLINE" &&
+                    sent != null && sent.Accepted, "configured host produced accepted status callback");
+                Assert(!File.Exists(settings.QueueFile), "presence alone does not create telemetry queue");
+                Assert(!Directory.Exists(Path.Combine(directory, "history")), "presence alone does not write telemetry history");
+                using (new CollectorOwnership(settings.QueueFile)) { }
+            }
+        });
+    }
+
+    private static void PresenceReportNeverPlacesTxtChangeAfterProbe()
+    {
+        string machine = "WTD-1";
+        DateTime now = DateTime.UtcNow;
+        ScanSummary summary = new ScanSummary();
+        summary.MarkRootReadable(now);
+        summary.MarkReadable(machine, now);
+        summary.ObserveFile(machine, "old.txt", 10, now.AddDays(-1), now);
+        summary.ObserveFile(machine, "old.txt", 11, now.AddDays(-1), now.AddMinutes(1));
+        DeviceHosts hosts = new DeviceHosts();
+        hosts.Targets.Add(new HostTarget { MachineName = machine, HostName = "controller.local", Method = "ICMP" });
+        CollectorRuntime runtime = new CollectorRuntime(null, null, null, null, null, null, new ConstantHostProbe(true));
+        MethodInfo probePresence = typeof(CollectorRuntime).GetMethod("ProbePresence", BindingFlags.Instance | BindingFlags.NonPublic);
+        IList<PresenceReport> reports = (IList<PresenceReport>)probePresence.Invoke(runtime,
+            new object[] { hosts, summary, new HostProbeCoordinator(new ConstantHostProbe(true), 100, 4),
+                new PresenceTracker(3), new HashSet<string>(StringComparer.OrdinalIgnoreCase) });
+        Assert(reports.Count == 1 && reports[0].NetworkState == "ONLINE", "configured host reports network result");
+        Assert(!reports[0].LastTxtChangeAt.HasValue || reports[0].LastTxtChangeAt.Value <= reports[0].ObservedAt,
+            "concurrent TXT observation cannot make QMS reject the presence timestamp order");
+    }
+
+    private static void StopBeforePresenceDispatchSkipsRequest()
+    {
+        TcpListener listener = new TcpListener(IPAddress.Loopback, 0);
+        listener.Start();
+        try
+        {
+            string url = "http://127.0.0.1:" + ((IPEndPoint)listener.LocalEndpoint).Port.ToString(CultureInfo.InvariantCulture);
+            CollectorRuntime runtime = new CollectorRuntime(null, null, null, null, null, null, new ConstantHostProbe(true));
+            PresenceReport report = new PresenceReport {
+                MachineName = "WTD-1", ObservedAt = DateTimeOffset.UtcNow,
+                NetworkState = "ONLINE", SourceState = "READABLE"
+            };
+            MethodInfo sendPresence = typeof(CollectorRuntime).GetMethod("SendPresence", BindingFlags.Instance | BindingFlags.NonPublic);
+            sendPresence.Invoke(runtime, new object[] {
+                new StopOnReadReports(runtime, report), new PresenceSender(url, "gateway-secret", 1),
+                new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase),
+                new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+            });
+            Assert(!listener.Pending(), "stop after selecting a report prevents its status POST");
+        }
+        finally { listener.Stop(); }
+    }
+
+    private sealed class StopOnReadReports : IList<PresenceReport>
+    {
+        private readonly CollectorRuntime runtime;
+        private readonly PresenceReport report;
+        public StopOnReadReports(CollectorRuntime runtime, PresenceReport report) { this.runtime = runtime; this.report = report; }
+        public PresenceReport this[int index] {
+            get { runtime.StopAsync(); return report; }
+            set { throw new NotSupportedException(); }
+        }
+        public int Count { get { return 1; } }
+        public bool IsReadOnly { get { return true; } }
+        public void Add(PresenceReport item) { throw new NotSupportedException(); }
+        public void Clear() { throw new NotSupportedException(); }
+        public bool Contains(PresenceReport item) { return item == report; }
+        public void CopyTo(PresenceReport[] array, int arrayIndex) { array[arrayIndex] = report; }
+        public IEnumerator<PresenceReport> GetEnumerator() { yield return report; }
+        System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() { return GetEnumerator(); }
+        public int IndexOf(PresenceReport item) { return item == report ? 0 : -1; }
+        public void Insert(int index, PresenceReport item) { throw new NotSupportedException(); }
+        public bool Remove(PresenceReport item) { throw new NotSupportedException(); }
+        public void RemoveAt(int index) { throw new NotSupportedException(); }
+    }
+
+    private sealed class ConstantHostProbe : IHostProbe
+    {
+        private readonly bool reachable;
+        public ConstantHostProbe(bool reachable) { this.reachable = reachable; }
+        public bool? Probe(HostTarget target, int timeoutMilliseconds, Func<bool> shouldStop) { return reachable; }
     }
 
     private static void StopDuringScanKeepsUnprocessedFiles()
@@ -918,6 +1350,7 @@ internal static class CollectorTests
         private Exception failure;
         public string BaseUrl { get; private set; }
         public string RedirectLocation { get; set; }
+        public string ResponseBody { get; set; }
         public List<CapturedRequest> Requests { get { return requests; } }
 
         public HttpFixture(params int[] statuses)
@@ -975,8 +1408,10 @@ internal static class CollectorTests
                         requests.Add(request);
                         string location = status >= 300 && status < 400 && RedirectLocation != null ?
                             "Location: " + RedirectLocation + "\r\n" : "";
-                        byte[] response = Encoding.ASCII.GetBytes("HTTP/1.1 " + status.ToString(CultureInfo.InvariantCulture) +
-                            " Result\r\n" + location + "Content-Length: 0\r\nConnection: close\r\n\r\n");
+                        string payload = ResponseBody ?? "";
+                        byte[] response = Encoding.UTF8.GetBytes("HTTP/1.1 " + status.ToString(CultureInfo.InvariantCulture) +
+                            " Result\r\n" + location + "Content-Length: " + Encoding.UTF8.GetByteCount(payload).ToString(CultureInfo.InvariantCulture) +
+                            "\r\nConnection: close\r\n\r\n" + payload);
                         stream.Write(response, 0, response.Length);
                     }
                 }

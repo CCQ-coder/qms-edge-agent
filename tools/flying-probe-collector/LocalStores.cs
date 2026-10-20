@@ -33,6 +33,7 @@ internal sealed class CollectorOwnership : IDisposable
 internal sealed class PendingEventStore
 {
     private readonly string path;
+    private readonly object gate = new object();
     private readonly JavaScriptSerializer serializer = new JavaScriptSerializer { MaxJsonLength = int.MaxValue };
     private List<Dictionary<string, object>> items = new List<Dictionary<string, object>>();
 
@@ -61,30 +62,34 @@ internal sealed class PendingEventStore
     {
         string recordNo = RecordNo(eventItem);
         if (recordNo == null) throw new ArgumentException("Event must contain recordNo.", "eventItem");
-        foreach (Dictionary<string, object> item in items)
+        lock (gate)
         {
-            if (RecordNo(item) == recordNo) return false;
+            foreach (Dictionary<string, object> item in items)
+                if (RecordNo(item) == recordNo) return false;
+            List<Dictionary<string, object>> next = new List<Dictionary<string, object>>(items);
+            next.Add(eventItem);
+            AtomicJson.Write(path, serializer.Serialize(next));
+            items = next;
+            return true;
         }
-        List<Dictionary<string, object>> next = new List<Dictionary<string, object>>(items);
-        next.Add(eventItem);
-        AtomicJson.Write(path, serializer.Serialize(next));
-        items = next;
-        return true;
     }
 
     public IList<Dictionary<string, object>> Snapshot()
     {
-        return new List<Dictionary<string, object>>(items);
+        lock (gate) return new List<Dictionary<string, object>>(items);
     }
 
     public void Remove(string recordNo)
     {
-        List<Dictionary<string, object>> next = new List<Dictionary<string, object>>(items);
-        int index = next.FindIndex(delegate(Dictionary<string, object> item) { return RecordNo(item) == recordNo; });
-        if (index < 0) return;
-        next.RemoveAt(index);
-        AtomicJson.Write(path, serializer.Serialize(next));
-        items = next;
+        lock (gate)
+        {
+            List<Dictionary<string, object>> next = new List<Dictionary<string, object>>(items);
+            int index = next.FindIndex(delegate(Dictionary<string, object> item) { return RecordNo(item) == recordNo; });
+            if (index < 0) return;
+            next.RemoveAt(index);
+            AtomicJson.Write(path, serializer.Serialize(next));
+            items = next;
+        }
     }
 
     private static string RecordNo(Dictionary<string, object> item)

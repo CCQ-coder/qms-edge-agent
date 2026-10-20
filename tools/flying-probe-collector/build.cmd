@@ -11,12 +11,13 @@ if not exist "%CSC%" (
   exit /b 1
 )
 
-"%CSC%" /nologo /target:exe /main:Program /platform:anycpu /optimize+ /out:"%OUT_DIR%\FlyingProbeCollector.Console.exe" /reference:System.dll /reference:System.Core.dll /reference:System.Web.Extensions.dll "%SCRIPT_DIR%Program.cs" "%SCRIPT_DIR%SettingsDocument.cs" "%SCRIPT_DIR%ProbeRecords.cs" "%SCRIPT_DIR%LocalStores.cs" "%SCRIPT_DIR%ProbeScanner.cs" "%SCRIPT_DIR%QmsSender.cs" "%SCRIPT_DIR%SyncHistory.cs" "%SCRIPT_DIR%CollectorRuntime.cs"
+"%CSC%" /nologo /target:exe /main:Program /platform:anycpu /optimize+ /out:"%OUT_DIR%\FlyingProbeCollector.Console.exe" /reference:System.dll /reference:System.Core.dll /reference:System.Web.Extensions.dll "%SCRIPT_DIR%Program.cs" "%SCRIPT_DIR%SettingsDocument.cs" "%SCRIPT_DIR%ProbeRecords.cs" "%SCRIPT_DIR%LocalStores.cs" "%SCRIPT_DIR%ProbeScanner.cs" "%SCRIPT_DIR%QmsSender.cs" "%SCRIPT_DIR%SyncHistory.cs" "%SCRIPT_DIR%CollectorRuntime.cs" "%SCRIPT_DIR%DeviceHosts.cs" "%SCRIPT_DIR%ScanSummary.cs" "%SCRIPT_DIR%PresenceState.cs" "%SCRIPT_DIR%NetworkProbe.cs" "%SCRIPT_DIR%PresenceSender.cs"
 if errorlevel 1 exit /b %errorlevel%
-"%CSC%" /nologo /target:winexe /main:GuiProgram /platform:anycpu /optimize+ /out:"%OUT_DIR%\FlyingProbeCollector.exe" /reference:System.dll /reference:System.Core.dll /reference:System.Web.Extensions.dll /reference:System.Windows.Forms.dll /reference:System.Drawing.dll "%SCRIPT_DIR%GuiProgram.cs" "%SCRIPT_DIR%CollectorForm.cs" "%SCRIPT_DIR%SyncHistoryView.cs" "%SCRIPT_DIR%Program.cs" "%SCRIPT_DIR%SettingsDocument.cs" "%SCRIPT_DIR%ProbeRecords.cs" "%SCRIPT_DIR%LocalStores.cs" "%SCRIPT_DIR%ProbeScanner.cs" "%SCRIPT_DIR%QmsSender.cs" "%SCRIPT_DIR%SyncHistory.cs" "%SCRIPT_DIR%CollectorRuntime.cs"
+"%CSC%" /nologo /target:winexe /main:GuiProgram /platform:anycpu /optimize+ /out:"%OUT_DIR%\FlyingProbeCollector.exe" /reference:System.dll /reference:System.Core.dll /reference:System.Web.Extensions.dll /reference:System.Windows.Forms.dll /reference:System.Drawing.dll "%SCRIPT_DIR%GuiProgram.cs" "%SCRIPT_DIR%CollectorForm.cs" "%SCRIPT_DIR%DevicePresenceView.cs" "%SCRIPT_DIR%SyncHistoryView.cs" "%SCRIPT_DIR%Program.cs" "%SCRIPT_DIR%SettingsDocument.cs" "%SCRIPT_DIR%ProbeRecords.cs" "%SCRIPT_DIR%LocalStores.cs" "%SCRIPT_DIR%ProbeScanner.cs" "%SCRIPT_DIR%QmsSender.cs" "%SCRIPT_DIR%SyncHistory.cs" "%SCRIPT_DIR%CollectorRuntime.cs" "%SCRIPT_DIR%DeviceHosts.cs" "%SCRIPT_DIR%ScanSummary.cs" "%SCRIPT_DIR%PresenceState.cs" "%SCRIPT_DIR%NetworkProbe.cs" "%SCRIPT_DIR%PresenceSender.cs"
 if errorlevel 1 exit /b %errorlevel%
 
 if not exist "%OUT_DIR%\FlyingProbeCollector.ini" copy /Y "%SCRIPT_DIR%FlyingProbeCollector.ini" "%OUT_DIR%\FlyingProbeCollector.ini" >nul
+if not exist "%OUT_DIR%\FlyingProbeCollector.hosts.json" copy /Y "%SCRIPT_DIR%FlyingProbeCollector.hosts.json" "%OUT_DIR%\FlyingProbeCollector.hosts.json" >nul
 copy /Y "%SCRIPT_DIR%start-collector.cmd" "%OUT_DIR%\start-collector.cmd" >nul
 copy /Y "%SCRIPT_DIR%README.md" "%OUT_DIR%\README.md" >nul
 echo Build complete: %OUT_DIR%\FlyingProbeCollector.exe and FlyingProbeCollector.Console.exe
