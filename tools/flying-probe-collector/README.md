@@ -1,12 +1,12 @@
 # 飞针机文件采集程序
 
-`FlyingProbeCollector.exe` 是带窗口的独立飞针机采集程序。它只读取飞针机共享目录，将每个设备目录中的 TXT 测试计数作为快照提交给 QMS Telemetry v1。它与其他监听器的进程、配置、队列和日志互不共用。
+`FlyingProbeCollector.exe` 是带窗口的独立飞针机采集程序。它只读取飞针机数据目录，将每个设备目录中的 TXT 测试计数作为快照提交给 QMS Telemetry v1。它与其他监听器的进程、配置、队列和日志互不共用。
 
 ## 构建与部署
 
-在已安装 .NET Framework 4.x 编译器的 Windows 电脑上运行 `tools\flying-probe-collector\build.cmd`。发布目录为 `outputs\flying-probe-collector`；将整个目录复制到现场电脑。现场运行账户需要能读取 `\\Scbgx\数字化\飞针机`，并能写入程序目录下的 `data` 和 `logs`。
+在已安装 .NET Framework 4.x 编译器的 Windows 电脑上运行 `tools\flying-probe-collector\build.cmd`。发布目录为 `outputs\flying-probe-collector`；将整个目录复制到现场电脑。SCBGX 上的采集目录使用本地路径 `E:\飞针机`，QMS 地址为 `http://192.168.1.98:8080`；在其他电脑部署时按实际位置修改。现场运行账户需要能读取采集目录，并能写入程序目录下的 `data` 和 `logs`。
 
-双击 `FlyingProbeCollector.exe` 打开窗口，在“采集配置”中填写共享目录、QMS 地址和真实网关令牌，然后点击“保存配置”和“启动采集”。生产 QMS 需要服务账号认证时，填写不带 `Bearer ` 前缀的 `BearerToken`。令牌框会遮挡内容；请勿将含真实令牌的 INI 提交到仓库。每个设备子目录名必须在 QMS 的“设备网关映射”中映射到对应设备的 `machineName`。
+双击 `FlyingProbeCollector.exe` 打开窗口，在“采集配置”中填写数据目录、QMS 地址和真实网关令牌，然后点击“保存配置”和“启动采集”。生产 QMS 需要服务账号认证时，填写不带 `Bearer ` 前缀的 `BearerToken`。令牌框会遮挡内容；请勿将含真实令牌的 INI 提交到仓库。每个设备子目录名必须在 QMS 的“设备网关映射”中映射到对应设备的 `machineName`。
 
 也可双击 `start-collector.cmd` 启动窗口，或在命令行执行 `FlyingProbeCollector.exe --config <配置文件路径>`。配置未填写完整时，窗口仍会打开并显示“待配置”；配置有效时自动开始采集。点击“停止采集”会完成当前 TXT 文件处理或等待当前 QMS 请求结束，然后停止并允许修改配置；关闭窗口即停止采集。另有 `FlyingProbeCollector.Console.exe` 供无人值守命令行运行，支持相同的 `--config` 参数，按 Ctrl+C 可退出。同一队列只能有一个程序运行。首次启动会采集现有 TXT 文件的当前快照，此后文件更新时上报新快照。文件需在连续两轮扫描中保持长度和修改时间不变才会被处理。
 
