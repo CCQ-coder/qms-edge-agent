@@ -1,0 +1,67 @@
+{
+  "description": "科视现场报文按已验证的来源路由或 MachineNO/assets/CMACHINE_CODE 识别设备；KST-001 映射 S1 KST001，KST-002 映射 S1 KST002。/Log function=result 优先使用 CMACHINE_CODE，避免陈旧 assets 串号。",
+  "deviceMappings": [
+    {"source_device_code": "KST-001", "device_number": "KST001"},
+    {"source_device_code": "KST-002", "device_number": "KST002"}
+  ],
+  "clientId": "S&{deviceNumber}&{productId}&{userId}",
+  "propertyTopic": "/{productId}/{deviceNumber}/property/post",
+  "eventTopic": "/{productId}/{deviceNumber}/event/post",
+  "encoding": "UTF-8",
+  "qos": 1,
+  "items": [
+    {
+      "kstPath": "/Status",
+      "s1Type": "property",
+      "identifier": "kst_status",
+      "valueSource": "Status",
+      "recommendedDataType": "string"
+    },
+    {
+      "kstPath": "/OEE",
+      "s1Type": "property",
+      "identifier": "kst_oee",
+      "valueSource": "OEE",
+      "recommendedDataType": "decimal"
+    },
+    {
+      "kstPath": "/Alarm",
+      "s1Type": "event",
+      "identifier": "kst_alarm",
+      "valueSource": "EventMessage",
+      "recommendedDataType": "string"
+    },
+    {
+      "kstPath": "/ExposureResult",
+      "alternateKstPath": "/Log",
+      "logFunction": "result",
+      "s1Type": "property",
+      "identifier": "kst_exposure_result",
+      "valueSource": "CRESULT",
+      "recommendedDataType": "string"
+    },
+    {
+      "kstPath": "/Heart",
+      "legacyKstPath": "/HeartBeat",
+      "s1Type": "property",
+      "identifier": "kst_heartbeat",
+      "valueSource": "HeartBeat",
+      "recommendedDataType": "integer"
+    },
+    {
+      "kstPath": "/Mode",
+      "s1Type": "property",
+      "identifier": "kst_mode",
+      "valueSource": "Mode",
+      "recommendedDataType": "string"
+    }
+  ],
+  "payloadExample": [
+    {
+      "id": "kst_oee",
+      "value": "0.07",
+      "ts": "2026-10-17 09:41:39",
+      "remark": "{\"method\":\"OEE\",\"assets\":\"KST-001\"}"
+    }
+  ]
+}

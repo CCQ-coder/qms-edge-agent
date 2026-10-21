@@ -1,0 +1,17 @@
+{
+  "enabled": false,
+  "host": "192.168.3.128",
+  "port": 1883,
+  "product_id": "",
+  "device_number": "KST001",
+  "source_device_code": "KST-001",
+  "additional_devices": [],
+  "user_id": "",
+  "username": "",
+  "password": "",
+  "keep_alive_seconds": 30,
+  "request_timeout_seconds": 10,
+  "retry_interval_seconds": 10,
+  "telemetry_interval_seconds": 60,
+  "queue_file": ".\\data\\pending-s1-mqtt.json"
+}

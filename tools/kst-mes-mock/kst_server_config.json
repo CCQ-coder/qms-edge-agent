@@ -1,0 +1,9 @@
+{
+  "Status": "{\"success\":true,\"message\":\"accepted\",\"method\":\"Status\"}",
+  "OEE": "{\"success\":true,\"message\":\"accepted\",\"method\":\"OEE\"}",
+  "Alarm": "{\"success\":true,\"message\":\"accepted\",\"method\":\"Alarm\"}",
+  "ExposureResult": "{\"success\":true,\"message\":\"accepted\",\"method\":\"ExposureResult\"}",
+  "HeartBeat": "{\"success\":true,\"message\":\"accepted\",\"method\":\"HeartBeat\"}",
+  "Mode": "{\"success\":true,\"message\":\"accepted\",\"method\":\"Mode\"}",
+  "Log": "{\"success\":true,\"message\":\"accepted\",\"method\":\"Log\"}"
+}

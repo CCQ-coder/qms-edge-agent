@@ -133,7 +133,17 @@ namespace JingdeEapForwarder
         public int RequestTimeoutSeconds;
         public int MaxRequestBytes;
         public bool UseTls12;
+        public bool S1MqttEnabled;
+        public string S1MqttHost;
+        public int S1MqttPort;
+        public string S1MqttProductId;
+        public string S1MqttDeviceNumber;
+        public string S1MqttUserId;
+        public string S1MqttUsername;
+        public string S1MqttPassword;
+        public int S1MqttKeepAliveSeconds;
         public string QueueFile;
+        public string S1MqttQueueFile;
         public string LogFile;
         public int DisplayColumns;
         public int DisplayRows;
@@ -165,7 +175,17 @@ namespace JingdeEapForwarder
             settings.RequestTimeoutSeconds = ReadInt(values, "RequestTimeoutSeconds", 20, 1, 300);
             settings.MaxRequestBytes = ReadInt(values, "MaxRequestBytes", 1048576, 1024, 10485760);
             settings.UseTls12 = ReadBool(values, "UseTls12", true);
+            settings.S1MqttEnabled = ReadBool(values, "S1MqttEnabled", false);
+            settings.S1MqttHost = Read(values, "S1MqttHost", "192.168.3.128").Trim();
+            settings.S1MqttPort = ReadInt(values, "S1MqttPort", 1883, 1, 65535);
+            settings.S1MqttProductId = Read(values, "S1MqttProductId", "").Trim();
+            settings.S1MqttDeviceNumber = Read(values, "S1MqttDeviceNumber", "KST001").Trim();
+            settings.S1MqttUserId = Read(values, "S1MqttUserId", "").Trim();
+            settings.S1MqttUsername = Read(values, "S1MqttUsername", "").Trim();
+            settings.S1MqttPassword = Read(values, "S1MqttPassword", "");
+            settings.S1MqttKeepAliveSeconds = ReadInt(values, "S1MqttKeepAliveSeconds", 30, 5, 65535);
             settings.QueueFile = ResolvePath(baseDirectory, Read(values, "QueueFile", ".\\data\\pending-events.json"));
+            settings.S1MqttQueueFile = ResolvePath(baseDirectory, Read(values, "S1MqttQueueFile", ".\\data\\pending-s1-mqtt.json"));
             settings.LogFile = ResolvePath(baseDirectory, Read(values, "LogFile", ".\\logs\\jingde-eap-forwarder.log"));
             settings.DisplayColumns = ReadInt(values, "DisplayColumns", 2, 1, 6);
             settings.DisplayRows = ReadInt(values, "DisplayRows", 2, 1, 12);
@@ -201,6 +221,18 @@ namespace JingdeEapForwarder
                 throw new ArgumentException("QmsBaseUrl must be an absolute HTTP or HTTPS URL.");
             }
             if (string.IsNullOrEmpty(GatewayToken)) throw new ArgumentException("GatewayToken must be configured.");
+            if (S1MqttEnabled)
+            {
+                if (string.IsNullOrEmpty(S1MqttHost)) throw new ArgumentException("S1 MQTT 主机不能为空。");
+                if (!IsPositiveIntegerText(S1MqttProductId)) throw new ArgumentException("S1 MQTT 产品 ID 必须是正整数。");
+                if (string.IsNullOrWhiteSpace(S1MqttDeviceNumber)) throw new ArgumentException("S1 MQTT 设备编号只能包含英文字母和数字。");
+                foreach (char character in S1MqttDeviceNumber)
+                    if (!((character >= 'A' && character <= 'Z') || (character >= 'a' && character <= 'z') || (character >= '0' && character <= '9')))
+                        throw new ArgumentException("S1 MQTT 设备编号只能包含英文字母和数字。");
+                if (!IsPositiveIntegerText(S1MqttUserId)) throw new ArgumentException("S1 MQTT 用户 ID 必须是正整数。");
+                if (string.IsNullOrEmpty(S1MqttUsername)) throw new ArgumentException("S1 MQTT 用户名不能为空。");
+                if (string.IsNullOrEmpty(S1MqttPassword)) throw new ArgumentException("S1 MQTT 密码不能为空。");
+            }
         }
 
         public List<ListenerChannel> GetListeners()
@@ -237,7 +269,7 @@ namespace JingdeEapForwarder
             text.AppendLine("HosonAllowedDeviceIps=" + JoinIpList(HosonAllowedDeviceIps));
             text.AppendLine("; -1 表示未配置扫码判定时返回失败，避免擅自决定打印；0=需要打印，1=不需要打印。");
             text.AppendLine("HosonScanResultIsNg=" + HosonScanResultIsNg.ToString(CultureInfo.InvariantCulture));
-            text.AppendLine("; 科视 LDI：/Status、/OEE、/Alarm、/ExposureResult、/HeartBeat、/Mode；文档示例端口为 9000。");
+            text.AppendLine("; 科视 LDI：/Status、/OEE、/Alarm、/ExposureResult、/Heart、/Mode；兼容旧地址 /HeartBeat。");
             text.AppendLine("KstEnabled=" + KstEnabled.ToString().ToLowerInvariant());
             text.AppendLine("KstListenPrefix=" + KstListenPrefix);
             text.AppendLine("KstAllowedDeviceIps=" + JoinIpList(KstAllowedDeviceIps));
@@ -252,6 +284,18 @@ namespace JingdeEapForwarder
             text.AppendLine("RequestTimeoutSeconds=" + RequestTimeoutSeconds.ToString(CultureInfo.InvariantCulture));
             text.AppendLine("UseTls12=" + UseTls12.ToString().ToLowerInvariant());
             text.AppendLine();
+            text.AppendLine("[S1 MQTT]");
+            text.AppendLine("; 科视数据按 S1 物模型模板发布；启用前需在 S1 创建对应属性和事件。");
+            text.AppendLine("S1MqttEnabled=" + S1MqttEnabled.ToString().ToLowerInvariant());
+            text.AppendLine("S1MqttHost=" + S1MqttHost);
+            text.AppendLine("S1MqttPort=" + S1MqttPort.ToString(CultureInfo.InvariantCulture));
+            text.AppendLine("S1MqttProductId=" + S1MqttProductId);
+            text.AppendLine("S1MqttDeviceNumber=" + S1MqttDeviceNumber);
+            text.AppendLine("S1MqttUserId=" + S1MqttUserId);
+            text.AppendLine("S1MqttUsername=" + S1MqttUsername);
+            text.AppendLine("S1MqttPassword=" + S1MqttPassword);
+            text.AppendLine("S1MqttKeepAliveSeconds=" + S1MqttKeepAliveSeconds.ToString(CultureInfo.InvariantCulture));
+            text.AppendLine();
             text.AppendLine("[Display]");
             text.AppendLine("DisplayColumns=" + DisplayColumns.ToString(CultureInfo.InvariantCulture));
             text.AppendLine("DisplayRows=" + DisplayRows.ToString(CultureInfo.InvariantCulture));
@@ -260,8 +304,14 @@ namespace JingdeEapForwarder
             text.AppendLine();
             text.AppendLine("[Storage]");
             text.AppendLine("QueueFile=" + QueueFile);
+            text.AppendLine("S1MqttQueueFile=" + S1MqttQueueFile);
             text.AppendLine("LogFile=" + LogFile);
             File.WriteAllText(configPath, text.ToString(), Encoding.UTF8);
+        }
+
+        public string S1MqttClientId()
+        {
+            return "S&" + S1MqttDeviceNumber + "&" + S1MqttProductId + "&" + S1MqttUserId;
         }
 
         public static HashSet<string> ParseAllowedDeviceIps(string input)
@@ -328,6 +378,12 @@ namespace JingdeEapForwarder
             if (!values.TryGetValue(key, out raw)) return defaultValue;
             if (!bool.TryParse(raw, out value)) throw new ArgumentException(key + " must be true or false.");
             return value;
+        }
+
+        private static bool IsPositiveIntegerText(string value)
+        {
+            long parsed;
+            return long.TryParse(value, NumberStyles.None, CultureInfo.InvariantCulture, out parsed) && parsed > 0;
         }
     }
 
@@ -463,9 +519,12 @@ namespace JingdeEapForwarder
         private volatile bool stopping;
         private readonly List<HttpServer> servers = new List<HttpServer>();
         private Uploader uploader;
+        private S1MqttUploader s1MqttUploader;
         private readonly List<Thread> listenerThreads = new List<Thread>();
         private Thread uploadThread;
+        private Thread s1MqttThread;
         private PersistentQueue queue;
+        private PersistentQueue s1MqttQueue;
         private GatewayLog runtimeLog;
         private DateTime lastDeviceReceivedAt = DateTime.MinValue;
 
@@ -507,11 +566,22 @@ namespace JingdeEapForwarder
                 uploadThread = new Thread(new ThreadStart(delegate { uploader.Run(delegate { return stopping; }); }));
                 uploadThread.IsBackground = true;
                 uploadThread.Name = "lyr-qms-uploader";
+                s1MqttQueue = null;
+                s1MqttUploader = null;
+                s1MqttThread = null;
+                if (CurrentSettings.S1MqttEnabled)
+                {
+                    s1MqttQueue = new PersistentQueue(CurrentSettings.S1MqttQueueFile, log);
+                    s1MqttUploader = new S1MqttUploader(s1MqttQueue, new S1MqttClient(CurrentSettings), CurrentSettings, log, Publish);
+                    s1MqttThread = new Thread(new ThreadStart(delegate { s1MqttUploader.Run(delegate { return stopping; }); }));
+                    s1MqttThread.IsBackground = true;
+                    s1MqttThread.Name = "lyr-s1-mqtt-uploader";
+                }
                 servers.Clear();
                 listenerThreads.Clear();
                 foreach (ListenerChannel channel in CurrentSettings.GetListeners())
                 {
-                    HttpServer listenerServer = new HttpServer(CurrentSettings, channel, queue, log, Publish);
+                    HttpServer listenerServer = new HttpServer(CurrentSettings, channel, queue, s1MqttQueue, log, Publish);
                     servers.Add(listenerServer);
                     Thread listenerThread = new Thread(new ThreadStart(delegate { RunListener(listenerServer); }));
                     listenerThread.IsBackground = true;
@@ -520,13 +590,17 @@ namespace JingdeEapForwarder
                 }
                 IsRunning = true;
                 uploadThread.Start();
+                if (s1MqttThread != null) s1MqttThread.Start();
                 foreach (Thread listenerThread in listenerThreads) listenerThread.Start();
                 Publish(new GatewayFlowEvent {
                     Stage = "服务启动",
                     Source = CurrentSettings.ListenerSummary(),
-                    Summary = "已启动精德、森泉和科视三类设备监听，并转发到 " + CurrentSettings.QmsBaseUrl + "；当前待转发 " + queue.Count + " 条。"
+                    Summary = "已启动设备监听并转发到 QMS" +
+                        (CurrentSettings.S1MqttEnabled ? "、S1 MQTT" : "") + "；QMS 待转发 " + queue.Count + " 条" +
+                        (s1MqttQueue == null ? "。" : "，S1 待转发 " + s1MqttQueue.Count + " 条。")
                 });
-                log.Info("LYR device listener started. Listeners=" + CurrentSettings.ListenerSummary() + ", Qms=" + CurrentSettings.QmsBaseUrl);
+                log.Info("LYR device listener started. Listeners=" + CurrentSettings.ListenerSummary() + ", Qms=" + CurrentSettings.QmsBaseUrl +
+                    ", S1Mqtt=" + (CurrentSettings.S1MqttEnabled ? CurrentSettings.S1MqttHost + ":" + CurrentSettings.S1MqttPort : "disabled"));
             }
         }
 
@@ -534,13 +608,17 @@ namespace JingdeEapForwarder
         {
             List<Thread> waitListeners;
             Thread waitUploader;
+            Thread waitS1Mqtt;
             lock (sync)
             {
                 if (!IsRunning && servers.Count == 0 && uploader == null) return;
                 stopping = true;
                 foreach (HttpServer server in servers) server.Stop();
+                if (uploader != null) uploader.Stop();
+                if (s1MqttUploader != null) s1MqttUploader.Stop();
                 waitListeners = new List<Thread>(listenerThreads);
                 waitUploader = uploadThread;
+                waitS1Mqtt = s1MqttThread;
                 IsRunning = false;
             }
             foreach (Thread waitListener in waitListeners)
@@ -548,6 +626,7 @@ namespace JingdeEapForwarder
                 if (waitListener != null && waitListener != Thread.CurrentThread) waitListener.Join(2000);
             }
             if (waitUploader != null && waitUploader != Thread.CurrentThread) waitUploader.Join(2000);
+            if (waitS1Mqtt != null && waitS1Mqtt != Thread.CurrentThread) waitS1Mqtt.Join(2000);
             if (uploader != null) uploader.FlushOnce();
             Publish(new GatewayFlowEvent { Stage = "服务停止", Summary = "监听已停止；待转发队列保留 " + PendingCount + " 条。" });
         }
@@ -560,6 +639,7 @@ namespace JingdeEapForwarder
         public void FlushNow()
         {
             if (uploader != null) uploader.FlushOnce();
+            if (s1MqttUploader != null) s1MqttUploader.FlushOnce();
         }
 
         private void RunListener(HttpServer listenerServer)
@@ -641,7 +721,7 @@ namespace JingdeEapForwarder
             try
             {
                 object raw = serializer.DeserializeObject(File.ReadAllText(filePath, Encoding.UTF8));
-                ArrayList array = raw as ArrayList;
+                IList array = raw as IList;
                 if (array == null) throw new InvalidDataException("Queue root must be a JSON array.");
                 foreach (object entry in array)
                 {
@@ -725,6 +805,7 @@ namespace JingdeEapForwarder
         private readonly Settings settings;
         private readonly GatewayLog log;
         private readonly AutoResetEvent wakeSignal = new AutoResetEvent(false);
+        private readonly object flushSync = new object();
         private readonly Action<GatewayFlowEvent> publish;
 
         public Uploader(PersistentQueue queue, QmsClient qms, Settings settings, GatewayLog log, Action<GatewayFlowEvent> publish)
@@ -751,33 +832,41 @@ namespace JingdeEapForwarder
             wakeSignal.Set();
         }
 
+        public void Stop()
+        {
+            wakeSignal.Set();
+        }
+
         public void FlushOnce()
         {
-            while (queue.Count > 0)
+            lock (flushSync)
             {
-                List<Dictionary<string, object>> batch = queue.Peek(settings.BatchSize);
-                try
+                while (queue.Count > 0)
                 {
-                    qms.Upload(batch);
-                    queue.RemoveFirst(batch.Count);
-                    log.Info("Forwarded " + batch.Count + " event(s) to QMS. Pending=" + queue.Count);
-                    Publish(new GatewayFlowEvent {
-                        Stage = "转发成功",
-                        Source = settings.QmsBaseUrl,
-                        Summary = "已提交 " + batch.Count + " 条事件到 QMS；待转发 " + queue.Count + " 条。",
-                        NormalizedPayload = new JavaScriptSerializer().Serialize(batch)
-                    });
-                }
-                catch (Exception exception)
-                {
-                    log.Warn("QMS is unavailable; retained " + queue.Count + " pending event(s). " + exception.Message);
-                    Publish(new GatewayFlowEvent {
-                        Stage = "转发待重试",
-                        Source = settings.QmsBaseUrl,
-                        Summary = "QMS 暂不可用，已保留 " + queue.Count + " 条待转发数据：" + exception.Message,
-                        NormalizedPayload = new JavaScriptSerializer().Serialize(batch)
-                    });
-                    return;
+                    List<Dictionary<string, object>> batch = queue.Peek(settings.BatchSize);
+                    try
+                    {
+                        qms.Upload(batch);
+                        queue.RemoveFirst(batch.Count);
+                        log.Info("Forwarded " + batch.Count + " event(s) to QMS. Pending=" + queue.Count);
+                        Publish(new GatewayFlowEvent {
+                            Stage = "转发成功",
+                            Source = settings.QmsBaseUrl,
+                            Summary = "已提交 " + batch.Count + " 条事件到 QMS；待转发 " + queue.Count + " 条。",
+                            NormalizedPayload = new JavaScriptSerializer().Serialize(batch)
+                        });
+                    }
+                    catch (Exception exception)
+                    {
+                        log.Warn("QMS is unavailable; retained " + queue.Count + " pending event(s). " + exception.Message);
+                        Publish(new GatewayFlowEvent {
+                            Stage = "转发待重试",
+                            Source = settings.QmsBaseUrl,
+                            Summary = "QMS 暂不可用，已保留 " + queue.Count + " 条待转发数据：" + exception.Message,
+                            NormalizedPayload = new JavaScriptSerializer().Serialize(batch)
+                        });
+                        return;
+                    }
                 }
             }
         }
@@ -793,6 +882,7 @@ namespace JingdeEapForwarder
         private readonly Settings settings;
         private readonly ListenerChannel channel;
         private readonly PersistentQueue queue;
+        private readonly PersistentQueue s1MqttQueue;
         private readonly GatewayLog log;
         private readonly JavaScriptSerializer serializer = new JavaScriptSerializer();
         private readonly HttpListener listener = new HttpListener();
@@ -801,11 +891,12 @@ namespace JingdeEapForwarder
 
         public ListenerChannel Channel { get { return channel; } }
 
-        public HttpServer(Settings settings, ListenerChannel channel, PersistentQueue queue, GatewayLog log, Action<GatewayFlowEvent> publish)
+        public HttpServer(Settings settings, ListenerChannel channel, PersistentQueue queue, PersistentQueue s1MqttQueue, GatewayLog log, Action<GatewayFlowEvent> publish)
         {
             this.settings = settings;
             this.channel = channel;
             this.queue = queue;
+            this.s1MqttQueue = s1MqttQueue;
             this.log = log;
             this.publish = publish;
             hosonTranslator = new HosonTranslator(settings.HosonScanResultIsNg);
@@ -874,7 +965,12 @@ namespace JingdeEapForwarder
 
                 DateTime receivedAt = DateTime.Now;
                 ProtocolDispatchResult result = Dispatch(context.Request.Url == null ? "" : context.Request.Url.AbsolutePath, envelope, sourceIp, receivedAt);
-                if (result.EventItem != null) queue.Enqueue(result.EventItem);
+                if (result.EventItem != null)
+                {
+                    queue.Enqueue(result.EventItem);
+                    if (s1MqttQueue != null && string.Equals(channel.Protocol, "KST_LDI", StringComparison.Ordinal))
+                        s1MqttQueue.Enqueue(result.EventItem);
+                }
                 string equipment = !string.IsNullOrEmpty(result.Equipment) ? result.Equipment : GetValue(result.EventItem, "machineName");
                 string recordNo = GetValue(result.EventItem, "recordNo");
                 log.Info("Accepted " + channel.Name + " " + result.Method + " from " + sourceIp + ", equipment=" + equipment + ", record=" + recordNo + ", pending=" + queue.Count);
@@ -886,7 +982,9 @@ namespace JingdeEapForwarder
                     Equipment = equipment,
                     Summary = result.EventItem == null
                         ? "已按协议返回响应。"
-                        : "已写入本地队列，记录号 " + recordNo + "；待转发 " + queue.Count + " 条。",
+                        : "已写入本地队列，记录号 " + recordNo + "；QMS 待转发 " + queue.Count + " 条" +
+                            (s1MqttQueue == null || !string.Equals(channel.Protocol, "KST_LDI", StringComparison.Ordinal)
+                                ? "。" : "，S1 待转发 " + s1MqttQueue.Count + " 条。"),
                     RawPayload = Truncate(raw, 120000),
                     NormalizedPayload = result.EventItem == null ? serializer.Serialize(result.ResponsePayload) : serializer.Serialize(result.EventItem)
                 });
@@ -1348,6 +1446,7 @@ namespace JingdeEapForwarder
             if (string.Equals(method, "OEE", StringComparison.OrdinalIgnoreCase)) return "OEE";
             if (string.Equals(method, "Alarm", StringComparison.OrdinalIgnoreCase)) return "Alarm";
             if (string.Equals(method, "ExposureResult", StringComparison.OrdinalIgnoreCase)) return "ExposureResult";
+            if (string.Equals(method, "Heart", StringComparison.OrdinalIgnoreCase)) return "HeartBeat";
             if (string.Equals(method, "HeartBeat", StringComparison.OrdinalIgnoreCase)) return "HeartBeat";
             if (string.Equals(method, "Mode", StringComparison.OrdinalIgnoreCase)) return "Mode";
             throw new ProtocolException("不支持的科视 LDI 地址：/" + method);
@@ -1356,7 +1455,8 @@ namespace JingdeEapForwarder
         public static Dictionary<string, object> Translate(string method, Dictionary<string, object> payload, string sourceIp, DateTime receivedAt)
         {
             string equipment = string.Equals(method, "ExposureResult", StringComparison.Ordinal)
-                ? RequireString(payload, "CMACHINE_CODE") : RequireString(payload, "MachineNO");
+                ? RequireAnyString(payload, "CMACHINE_CODE", "assets", "MachineNO")
+                : RequireAnyString(payload, "MachineNO", "assets");
             DateTime deviceTime = ResolveDeviceTime(method, payload, receivedAt);
             string recordKey = ResolveRecordKey(method, payload, equipment, deviceTime);
             Dictionary<string, object> attributes = new Dictionary<string, object>();
@@ -1371,18 +1471,19 @@ namespace JingdeEapForwarder
             {
                 result["eventType"] = "STATUS_CHANGED";
                 result["status"] = MapStatus(RequireString(payload, "Status"));
-                result["operatorName"] = RequireString(payload, "UserName");
-                result["batchNo"] = RequireString(payload, "LotNO");
-                result["materialNo"] = RequireString(payload, "CBARCODE");
+                SetIfNotEmpty(result, "operatorName", GetString(payload, "UserName"));
+                SetIfNotEmpty(result, "batchNo", GetString(payload, "LotNO"));
+                SetIfNotEmpty(result, "materialNo", GetString(payload, "CBARCODE"));
             }
             else if (string.Equals(method, "OEE", StringComparison.Ordinal))
             {
                 result["eventType"] = "OEE_REPORTED";
-                result["operatorName"] = RequireString(payload, "UserName");
-                result["workOrderNo"] = RequireString(payload, "OrderNO");
-                result["materialNo"] = RequireString(payload, "ItemNO");
-                result["batchNo"] = RequireString(payload, "Barcode");
-                attributes["oee"] = RequireString(payload, "OEE");
+                SetIfNotEmpty(result, "operatorName", GetString(payload, "UserName"));
+                SetIfNotEmpty(result, "workOrderNo", GetString(payload, "OrderNO"));
+                SetIfNotEmpty(result, "materialNo", GetString(payload, "ItemNO"));
+                SetIfNotEmpty(result, "batchNo", GetFirstString(payload, "LotNO", "Barcode"));
+                SetIfNotEmpty(attributes, "barcode", GetString(payload, "CBARCODE"));
+                attributes["oee"] = RequireValue(payload, "OEE");
                 attributes["startTime"] = RequireString(payload, "StartTime");
                 attributes["endTime"] = RequireString(payload, "EndTime");
             }
@@ -1390,28 +1491,31 @@ namespace JingdeEapForwarder
             {
                 result["eventType"] = "ALARM_RAISED";
                 result["status"] = "ALARM";
-                result["alarmCode"] = RequireString(payload, "EventNO");
+                result["alarmCode"] = RequireAnyString(payload, "EventNO", "EventID", "ID");
                 result["alarmMessage"] = RequireString(payload, "EventMessage");
-                result["operatorName"] = RequireString(payload, "UserName");
-                result["workOrderNo"] = RequireString(payload, "OrderNO");
-                result["materialNo"] = RequireString(payload, "ItemNO");
-                result["batchNo"] = RequireString(payload, "Barcode");
+                SetIfNotEmpty(result, "operatorName", GetString(payload, "UserName"));
+                SetIfNotEmpty(result, "workOrderNo", GetString(payload, "OrderNO"));
+                SetIfNotEmpty(result, "materialNo", GetString(payload, "ItemNO"));
+                SetIfNotEmpty(result, "batchNo", GetFirstString(payload, "LotNO", "Barcode"));
+                SetIfNotEmpty(attributes, "barcode", GetString(payload, "CBARCODE"));
                 attributes["level"] = RequireString(payload, "Level");
-                attributes["eventId"] = RequireString(payload, "EventID");
+                attributes["eventId"] = RequireAnyString(payload, "EventID", "ID", "EventNO");
+                SetIfNotEmpty(attributes, "startTime", GetString(payload, "StartTime"));
+                SetIfNotEmpty(attributes, "endTime", GetString(payload, "EndTime"));
             }
             else if (string.Equals(method, "ExposureResult", StringComparison.Ordinal))
             {
                 string exposureResult = RequireString(payload, "CRESULT");
                 result["eventType"] = exposureResult == "OK" ? "MACHINING_COMPLETED" : "EXPOSURE_RESULT";
                 if (exposureResult == "OK") result["status"] = "COMPLETED";
-                result["operatorName"] = RequireString(payload, "CUSER_NAME");
-                result["workOrderNo"] = RequireString(payload, "CORDER_NO");
-                result["materialNo"] = RequireString(payload, "CITEM_NO");
-                result["batchNo"] = RequireString(payload, "CLOT_NO");
-                attributes["barcode"] = RequireString(payload, "CBARCODE");
+                SetIfNotEmpty(result, "operatorName", GetString(payload, "CUSER_NAME"));
+                SetIfNotEmpty(result, "workOrderNo", GetString(payload, "CORDER_NO"));
+                SetIfNotEmpty(result, "materialNo", GetString(payload, "CITEM_NO"));
+                SetIfNotEmpty(result, "batchNo", GetString(payload, "CLOT_NO"));
+                SetIfNotEmpty(attributes, "barcode", GetString(payload, "CBARCODE"));
                 attributes["result"] = exposureResult;
-                attributes["layer"] = RequireString(payload, "CLAYER");
-                attributes["face"] = RequireString(payload, "CFACE");
+                SetIfNotEmpty(attributes, "layer", GetString(payload, "CLAYER"));
+                SetIfNotEmpty(attributes, "face", GetString(payload, "CFACE"));
             }
             else if (string.Equals(method, "HeartBeat", StringComparison.Ordinal))
             {
@@ -1421,7 +1525,7 @@ namespace JingdeEapForwarder
             else if (string.Equals(method, "Mode", StringComparison.Ordinal))
             {
                 result["eventType"] = "MODE_CHANGED";
-                result["operatorName"] = RequireString(payload, "UserName");
+                SetIfNotEmpty(result, "operatorName", GetString(payload, "UserName"));
                 attributes["mode"] = RequireString(payload, "Mode");
             }
             return result;
@@ -1468,9 +1572,9 @@ namespace JingdeEapForwarder
         private static DateTime ResolveDeviceTime(string method, Dictionary<string, object> payload, DateTime fallback)
         {
             string value;
-            if (string.Equals(method, "OEE", StringComparison.Ordinal)) value = GetString(payload, "EndTime");
-            else if (string.Equals(method, "ExposureResult", StringComparison.Ordinal)) value = GetString(payload, "CEND_TIME");
-            else value = GetString(payload, "MachineTime");
+            value = GetString(payload, "MachineTime");
+            if (string.IsNullOrEmpty(value) && string.Equals(method, "OEE", StringComparison.Ordinal)) value = GetString(payload, "EndTime");
+            if (string.IsNullOrEmpty(value) && string.Equals(method, "ExposureResult", StringComparison.Ordinal)) value = GetString(payload, "CEND_TIME");
             if (string.IsNullOrEmpty(value)) return fallback;
             DateTime parsed;
             if (!DateTime.TryParseExact(value.Trim(), new string[] { "yyyy-MM-dd HH:mm:ss", "yyyy-MM-ddTHH:mm:ss" },
@@ -1496,6 +1600,37 @@ namespace JingdeEapForwarder
             string value = GetString(source, key);
             if (string.IsNullOrEmpty(value)) throw new ProtocolException("缺少科视字段 " + key + "。");
             return value.Trim();
+        }
+
+        private static object RequireValue(Dictionary<string, object> source, string key)
+        {
+            object value;
+            if (source == null || !source.TryGetValue(key, out value) || value == null ||
+                string.IsNullOrEmpty(Convert.ToString(value, CultureInfo.InvariantCulture)))
+                throw new ProtocolException("缺少科视字段 " + key + "。");
+            return value;
+        }
+
+        private static string RequireAnyString(Dictionary<string, object> source, params string[] keys)
+        {
+            string value = GetFirstString(source, keys);
+            if (!string.IsNullOrEmpty(value)) return value.Trim();
+            throw new ProtocolException("缺少科视字段 " + string.Join("/", keys) + "。");
+        }
+
+        private static string GetFirstString(Dictionary<string, object> source, params string[] keys)
+        {
+            foreach (string key in keys)
+            {
+                string value = GetString(source, key);
+                if (!string.IsNullOrEmpty(value)) return value;
+            }
+            return null;
+        }
+
+        private static void SetIfNotEmpty(Dictionary<string, object> target, string key, string value)
+        {
+            if (!string.IsNullOrEmpty(value)) target[key] = value.Trim();
         }
 
         private static string GetString(Dictionary<string, object> source, string key)
@@ -2005,7 +2140,10 @@ namespace JingdeEapForwarder
                 deviceStatus.Text = "设备上报：最近 " + runtime.LastDeviceReceivedAt.ToString("HH:mm:ss", CultureInfo.InvariantCulture);
                 deviceStatus.ForeColor = Color.ForestGreen;
             }
-            endpointStatus.Text = runtime == null || runtime.CurrentSettings == null ? "" : "监听：" + runtime.CurrentSettings.ListenerSummary() + "    QMS：" + runtime.CurrentSettings.QmsBaseUrl;
+            endpointStatus.Text = runtime == null || runtime.CurrentSettings == null ? "" :
+                "监听：" + runtime.CurrentSettings.ListenerSummary() + "    QMS：" + runtime.CurrentSettings.QmsBaseUrl +
+                "    S1 MQTT：" + (runtime.CurrentSettings.S1MqttEnabled
+                    ? runtime.CurrentSettings.S1MqttHost + ":" + runtime.CurrentSettings.S1MqttPort : "未启用");
         }
     }
 
@@ -2033,6 +2171,15 @@ namespace JingdeEapForwarder
         private readonly TextBox retentionDays = CreateTextBox();
         private readonly TextBox idleSeconds = CreateTextBox();
         private readonly CheckBox useTls12 = new CheckBox();
+        private readonly CheckBox s1MqttEnabled = new CheckBox();
+        private readonly TextBox s1MqttHost = CreateTextBox();
+        private readonly TextBox s1MqttPort = CreateTextBox();
+        private readonly TextBox s1MqttProductId = CreateTextBox();
+        private readonly TextBox s1MqttDeviceNumber = CreateTextBox();
+        private readonly TextBox s1MqttUserId = CreateTextBox();
+        private readonly TextBox s1MqttUsername = CreateTextBox();
+        private readonly TextBox s1MqttPassword = CreateTextBox();
+        private readonly TextBox s1MqttKeepAlive = CreateTextBox();
         public Settings CandidateSettings { get; private set; }
 
         public GatewaySettingsForm(Settings settings)
@@ -2046,6 +2193,7 @@ namespace JingdeEapForwarder
             ClientSize = new Size(715, 700);
             Font = new Font("Microsoft YaHei UI", 9F, FontStyle.Regular, GraphicsUnit.Point);
             gatewayToken.UseSystemPasswordChar = true;
+            s1MqttPassword.UseSystemPasswordChar = true;
             Fill(settings);
             BuildLayout();
         }
@@ -2078,6 +2226,16 @@ namespace JingdeEapForwarder
             idleSeconds.Text = settings.IdleDisconnectSeconds.ToString(CultureInfo.InvariantCulture);
             useTls12.Text = "QMS 使用 TLS 1.2";
             useTls12.Checked = settings.UseTls12;
+            s1MqttEnabled.Text = "启用科视数据转发到 S1 MQTT";
+            s1MqttEnabled.Checked = settings.S1MqttEnabled;
+            s1MqttHost.Text = settings.S1MqttHost;
+            s1MqttPort.Text = settings.S1MqttPort.ToString(CultureInfo.InvariantCulture);
+            s1MqttProductId.Text = settings.S1MqttProductId;
+            s1MqttDeviceNumber.Text = settings.S1MqttDeviceNumber;
+            s1MqttUserId.Text = settings.S1MqttUserId;
+            s1MqttUsername.Text = settings.S1MqttUsername;
+            s1MqttPassword.Text = settings.S1MqttPassword;
+            s1MqttKeepAlive.Text = settings.S1MqttKeepAliveSeconds.ToString(CultureInfo.InvariantCulture);
         }
 
         private void BuildLayout()
@@ -2100,7 +2258,7 @@ namespace JingdeEapForwarder
             AddRow(table, "扫码判定 is_ng", hosonScanResultIsNg, "-1=拒绝未配置判定；0=需要打印；1=不需要打印。 ");
             AddSection(table, "科视 LDI（默认 9000）");
             AddRow(table, "监听开关", kstEnabled, "未勾选时不会绑定 9000 端口。 ");
-            AddRow(table, "监听地址", kstListenPrefix, "接收 /Status、/OEE、/Alarm、/ExposureResult、/HeartBeat、/Mode。 ");
+            AddRow(table, "监听地址", kstListenPrefix, "接收 /Status、/OEE、/Alarm、/ExposureResult、/Heart、/Mode；兼容 /HeartBeat。 ");
             AddRow(table, "设备 IP 白名单", kstAllowedIps, "逗号分隔；留空代表不限制来源。 ");
             AddSection(table, "QMS 转发配置");
             AddRow(table, "QMS 服务地址", qmsBaseUrl, "例如 http://192.168.1.71:8080。 ");
@@ -2111,6 +2269,16 @@ namespace JingdeEapForwarder
             AddRow(table, "请求超时（秒）", timeout, "1 - 300。 ");
             AddRow(table, "最大请求大小（字节）", maxBytes, "1024 - 10485760。 ");
             AddRow(table, "", useTls12, "");
+            AddSection(table, "S1 MQTT（科视数据）");
+            AddRow(table, "转发开关", s1MqttEnabled, "启用后使用 QoS 1 发布，失败数据保存在独立本地队列。 ");
+            AddRow(table, "Broker 主机", s1MqttHost, "S1 当前生产配置示例为 192.168.3.128。 ");
+            AddRow(table, "Broker 端口", s1MqttPort, "通常为 1883。 ");
+            AddRow(table, "产品 ID", s1MqttProductId, "S1 中已发布的科视产品数字 ID。 ");
+            AddRow(table, "设备编号", s1MqttDeviceNumber, "需与 S1 设备序列号一致，例如 KST001；现场报文 assets 可为 KST-001。 ");
+            AddRow(table, "用户 ID", s1MqttUserId, "用于客户端 ID：S&设备编号&产品ID&用户ID。 ");
+            AddRow(table, "MQTT 用户名", s1MqttUsername, "填写 S1 设备连接参数中的账号。 ");
+            AddRow(table, "MQTT 密码", s1MqttPassword, "填写 S1 设备连接参数中的密码；界面中掩码显示。 ");
+            AddRow(table, "保活时间（秒）", s1MqttKeepAlive, "5 - 65535。 ");
             AddSection(table, "监控显示配置");
             AddRow(table, "显示列数", displayColumns, "1 - 6；用于计算界面缓存容量。 ");
             AddRow(table, "显示行数", displayRows, "1 - 12；用于计算界面缓存容量。 ");
@@ -2214,6 +2382,15 @@ namespace JingdeEapForwarder
                 CandidateSettings.RecordRetentionDays = ParseNumber(retentionDays, "本地记录保留天数", 1, 3650);
                 CandidateSettings.IdleDisconnectSeconds = ParseNumber(idleSeconds, "空闲断线阈值", 1, 3600);
                 CandidateSettings.UseTls12 = useTls12.Checked;
+                CandidateSettings.S1MqttEnabled = s1MqttEnabled.Checked;
+                CandidateSettings.S1MqttHost = s1MqttHost.Text.Trim();
+                CandidateSettings.S1MqttPort = ParseNumber(s1MqttPort, "S1 MQTT 端口", 1, 65535);
+                CandidateSettings.S1MqttProductId = s1MqttProductId.Text.Trim();
+                CandidateSettings.S1MqttDeviceNumber = s1MqttDeviceNumber.Text.Trim();
+                CandidateSettings.S1MqttUserId = s1MqttUserId.Text.Trim();
+                CandidateSettings.S1MqttUsername = s1MqttUsername.Text.Trim();
+                CandidateSettings.S1MqttPassword = s1MqttPassword.Text;
+                CandidateSettings.S1MqttKeepAliveSeconds = ParseNumber(s1MqttKeepAlive, "S1 MQTT 保活时间", 5, 65535);
                 CandidateSettings.Validate();
                 DialogResult = DialogResult.OK;
                 Close();

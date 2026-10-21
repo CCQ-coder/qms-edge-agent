@@ -1,6 +1,6 @@
 # LYR 设备数据监听
 
-`JingdeEapForwarder.exe` 是部署在设备网段中间电脑上的独立 Windows 程序。界面名称为“LYR 设备数据监听”，可同时接收精德、森泉与科视的 HTTP POST 数据；每一路先写入本地持久化队列，再异步转发至 QMS 统一遥测接口。
+`JingdeEapForwarder.exe` 是部署在设备网段中间电脑上的独立 Windows 程序。界面名称为“LYR 设备数据监听”，可同时接收精德、森泉与科视的 HTTP POST 数据；每一路先写入本地持久化队列，再异步转发至 QMS 统一遥测接口。科视数据还可按 S1 物模型模板发布到 S1 MQTT。
 
 默认启动的是“LYR 设备数据监听”窗口：可实时查看设备原始 JSON、转换后的 QMS 事件、入队状态、转发成功或待重试原因。点击“服务配置”可分别勾选是否启用精德、森泉、科视端口，并设置对应监听地址、设备 IP 白名单、QMS 地址/令牌、重试和显示策略；保存后程序会自动重新启动监听服务。
 
@@ -14,7 +14,7 @@
 | 精德 EAP / `8002` | `POST /RestAPI/EQPAlarmReport` | `ALARM_RAISED` / `ALARM_CLEARED` | Set 映射为 QMS `ALARM`；Clear 保留为事件，不擅自覆盖随后设备状态 |
 | 精德 EAP / `8002` | `POST /RestAPI/EQPStatusChangeReport` | `STATUS_CHANGED` | `1=IDLE`、`2=PROCESSING`、`3=ALARM`、`4=STOPPED` |
 | 森泉 MES / `6680` | JSON `method=login`、`device_status`、`feed_material`、`scan_result`、`return_labels_result`、`carft_param`、`version_info` | 登录、状态、上料、扫码、打印结果、配方与版本事件 | `device_code` 是设备映射键；`1=运行`、`2=故障`、`3=待机`。扫码响应需在配置中明确 `is_ng`，默认拒绝。 |
-| 科视 LDI / `9000` | `/Status`、`/OEE`、`/Alarm`、`/ExposureResult`、`/HeartBeat`、`/Mode` | 状态、OEE、报警、曝光结果、心跳、模式事件 | `MachineNO`（曝光结果用 `CMACHINE_CODE`）是设备映射键；`WORK/WAIT/STOP/ALARM` 映射 QMS 状态。 |
+| 科视 LDI / `9000` | `/Status`、`/OEE`、`/Alarm`、`/ExposureResult`、`/Heart`、`/Mode`（兼容旧 `/HeartBeat`） | 状态、OEE、报警、曝光结果、心跳、模式事件 | 现场报文使用 `assets` 作为设备编号，仍兼容 `MachineNO`；曝光结果兼容 `CMACHINE_CODE`。`WORK/WAIT/STOP/ALARM` 映射 QMS 状态。 |
 
 完整的精德原始报文会随事件存入 QMS 的 `attributes.rawEapEnvelope`，便于追溯和后续补充字段映射。
 
@@ -38,6 +38,17 @@
 5. 运行 `start-gateway.cmd`。首次联调时可先运行 `JingdeEapForwarder.exe --self-test`，确认自检退出码为 `0`。
 6. 确认日志出现 `Accepted ...` 与 `Forwarded ... to QMS` 后，再以管理员身份运行 `install-autostart.cmd` 配置开机启动。
 
+## 科视转发到 S1 MQTT
+
+程序使用 S1 已有的 MQTT 3.1.1 接入规则，属性主题为 `/{productId}/{deviceNumber}/property/post`，报警事件主题为 `/{productId}/{deviceNumber}/event/post`，UTF-8 JSON 正文采用 `[{"id":"...","value":"...","ts":"yyyy-MM-dd HH:mm:ss","remark":"..."}]`。发布使用 QoS 1，收到 Broker 的 `PUBACK` 后才从 `data\pending-s1-mqtt.json` 删除。
+
+1. 参考发布目录中的 `s1-kst-mqtt-template.json`，在 S1 科视产品中创建并发布以下物模型标识符：属性 `kst_status`、`kst_oee`、`kst_exposure_result`、`kst_heartbeat`、`kst_mode`，事件 `kst_alarm`。
+2. 在 S1 创建序列号为 `KST001` 的设备，复制设备连接参数中的产品 ID、用户 ID、MQTT 用户名和密码。科视现场报文的 `assets`/`MachineNO` 是 `KST-001`；程序按配置的 S1 序列号发布 MQTT，并在 `remark` 保留现场编号。
+3. 在“服务配置”的“S1 MQTT（科视数据）”中填写 Broker、产品、设备和认证参数，再勾选转发开关。默认 Broker 示例取当前 S1 生产配置 `192.168.3.128:1883`；实际部署以 S1 页面给出的连接参数为准。
+4. 保存后查看界面中的“S1 转发成功”或“S1 转发待重试”。MQTT 与 QMS 使用不同队列，一端成功不会误删另一端待发数据。
+
+S1 简单认证客户端 ID 由程序生成：`S&设备编号&产品ID&用户ID`。INI 中的密码为设备连接密码；如 S1 产品启用了授权码，按 S1 返回的完整密码填写。配置文件含凭据，应限制文件访问权限。
+
 ## 配置与运维
 
 - 默认图形窗口展示完整数据流：`设备请求 -> 本地队列 -> QMS 接口`。选中任一行可查看原始 EAP 报文和转换后的 QMS JSON；“立即补传”可立即尝试发送本地队列。
@@ -45,6 +56,7 @@
 - 需要只在后台运行时，用 `start-gateway.cmd --headless`；后台模式仍保存日志和本地队列，但不打开窗口。
 - `logs\jingde-eap-forwarder.log`：当天的请求接收、转发成功和失败原因；跨天后会自动归档到 `logs\archive`，并按“本地记录保留（天）”清理历史归档。
 - `data\pending-events.json`：待 QMS 补传的数据。程序运行期间不要删除或修改；QMS 返回成功后会自动移除对应数据。
+- `data\pending-s1-mqtt.json`：待 S1 MQTT 补传的科视数据。只有收到 QoS 1 `PUBACK` 后才移除。
 - 设备按文档须使用 `POST`，正文为 JSON。精德只接收文档中的 3 个 `/RestAPI/*` 方法，并回传文档要求的 `Header`、`Body`、`Result` 结构；森泉按 JSON `method` 路由；科视按 HTTP 路径路由。
 - `TransactionID` 是网关的去重记录号的一部分；请设备端按文档生成唯一且稳定的事务号。其前 14 位若为 `yyyyMMddHHmmss`，网关会将其用作事件时间。
 

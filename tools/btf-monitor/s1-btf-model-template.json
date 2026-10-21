@@ -1,0 +1,13 @@
+{
+  "description": "为标特福产品创建并发布以下 S1 物模型标识符；每台现场锣机映射一台 S1 设备。",
+  "clientId": "S&{deviceNumber}&{productId}&{userId}",
+  "propertyTopic": "/{productId}/{deviceNumber}/property/post",
+  "eventTopic": "/{productId}/{deviceNumber}/event/post",
+  "qos": 1,
+  "properties": [
+    "btf_status", "btf_program", "btf_operator", "btf_work_count",
+    "btf_boot_seconds", "btf_work_seconds", "btf_finished_count",
+    "btf_progress", "btf_route_length", "btf_spindle_status"
+  ],
+  "events": ["btf_alarm"]
+}
