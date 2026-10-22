@@ -15,13 +15,23 @@ internal static class CollectorTests
 {
     private static int passed;
 
-    private static int Main()
+    private static int Main(string[] args)
     {
         try
         {
+            if (args.Length == 1 && args[0] == "--host-status")
+            {
+                Run("CpuPercentFromCounters", CpuPercentFromCounters);
+                if (Environment.OSVersion.Platform == PlatformID.Win32NT) Run("CaptureHostStatusOnWindows", CaptureHostStatusOnWindows);
+                else Console.WriteLine("SKIP CaptureHostStatusOnWindows (requires Windows)");
+                return 0;
+            }
             Run("ParseSample", ParseSample);
             Run("RejectMalformed", RejectMalformed);
             Run("MapEvent", MapEvent);
+            Run("CpuPercentFromCounters", CpuPercentFromCounters);
+            if (Environment.OSVersion.Platform == PlatformID.Win32NT) Run("CaptureHostStatusOnWindows", CaptureHostStatusOnWindows);
+            else Console.WriteLine("SKIP CaptureHostStatusOnWindows (requires Windows)");
             Run("RecoverPending", RecoverPending);
             Run("RecoverCheckpoint", RecoverCheckpoint);
             Run("RecoverLargeStores", RecoverLargeStores);
@@ -136,6 +146,26 @@ internal static class CollectorTests
     {
         object item;
         return value.TryGetValue(key, out item) ? item as string : null;
+    }
+
+    private static void CpuPercentFromCounters()
+    {
+        CpuTimes first = new CpuTimes(100, 200, 100);
+        Assert(!HostStatusSampler.CalculateCpuPercent(null, first).HasValue, "first CPU sample has no rate");
+        Assert(HostStatusSampler.CalculateCpuPercent(first, new CpuTimes(120, 260, 140)) == 80.0, "CPU busy delta");
+        Assert(HostStatusSampler.CalculateCpuPercent(first, first) == null, "zero delta has no rate");
+        Assert(HostStatusSampler.CalculateCpuPercent(first, new CpuTimes(90, 190, 90)) == null, "counter reset has no rate");
+        Assert(HostStatusSampler.CalculateCpuPercent(first, new CpuTimes(170, 260, 140)) == 30.0, "idle included in kernel");
+    }
+
+    private static void CaptureHostStatusOnWindows()
+    {
+        HostStatusSample sample = new HostStatusSampler().Capture();
+        Assert(!string.IsNullOrWhiteSpace(sample.HostName), "host name");
+        Assert(sample.SampledAtUtc.Kind == DateTimeKind.Utc, "UTC sample time");
+        Assert(sample.MemoryTotalBytes > 0 && sample.MemoryAvailableBytes <= sample.MemoryTotalBytes, "physical memory");
+        Assert(sample.SystemDiskTotalBytes > 0 && sample.SystemDiskFreeBytes <= sample.SystemDiskTotalBytes, "system disk");
+        Assert(sample.UptimeSeconds >= 0, "uptime");
     }
 
     private static void RecoverPending()
