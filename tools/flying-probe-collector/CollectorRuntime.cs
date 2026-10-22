@@ -103,7 +103,20 @@ internal sealed class CollectorRuntime
                 }, CancellationToken.None, TaskCreationOptions.LongRunning, TaskScheduler.Default);
                 hostWorker = Task.Factory.StartNew(delegate
                 {
-                    HostStatusWorker.Run(stop, TimeSpan.FromSeconds(60), delegate { hostSender.Send(capture()); }, Log);
+                    HostStatusRelay relay = null;
+                    HostStatusWorker.Run(stop, TimeSpan.FromSeconds(60), delegate
+                    {
+                        try { hostSender.Send(capture()); }
+                        catch (Exception error) { Log("Listener host status failed: " + error.GetType().Name); }
+                        try
+                        {
+                            if (relay == null)
+                                relay = new HostStatusRelay(settings.SourceRoot, settings.CheckpointFile + ".host-status.json",
+                                    hostSender.Send, Log);
+                            relay.ForwardOnce(delegate { return stop.WaitOne(0); });
+                        }
+                        catch (Exception error) { Log("Device host status relay failed: " + error.GetType().Name); }
+                    }, Log);
                 }, CancellationToken.None, TaskCreationOptions.LongRunning, TaskScheduler.Default);
                 worker.ContinueWith(delegate { stop.Set(); });
                 hostWorker.ContinueWith(delegate { stop.Set(); });

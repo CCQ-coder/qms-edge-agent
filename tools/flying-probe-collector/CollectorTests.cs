@@ -33,6 +33,16 @@ internal static class CollectorTests
                 Run("HostStatusPostFailures", HostStatusPostFailures);
                 return 0;
             }
+            if (args.Length == 1 && args[0] == "--relay")
+            {
+                Run("RelayForwardsTwoDeviceIds", RelayForwardsTwoDeviceIds);
+                Run("RelayDoesNotOverwriteListenerIdentity", RelayDoesNotOverwriteListenerIdentity);
+                Run("RelayRejectsInvalidSnapshotAndContinues", RelayRejectsInvalidSnapshotAndContinues);
+                Run("RelayDoesNotResendAfterRestart", RelayDoesNotResendAfterRestart);
+                Run("RelayRetriesAfterSendFailure", RelayRetriesAfterSendFailure);
+                Run("RelayFailureDoesNotStopTxtDelivery", RelayFailureDoesNotStopTxtDelivery);
+                return 0;
+            }
             if (args.Length == 1 && args[0] == "--http")
             {
                 Run("AcceptedPostRemovesEvent", AcceptedPostRemovesEvent);
@@ -77,6 +87,12 @@ internal static class CollectorTests
             Run("NoBearerWhenEmpty", NoBearerWhenEmpty);
             Run("HostStatusPost", HostStatusPost);
             Run("HostStatusPostFailures", HostStatusPostFailures);
+            Run("RelayForwardsTwoDeviceIds", RelayForwardsTwoDeviceIds);
+            Run("RelayDoesNotOverwriteListenerIdentity", RelayDoesNotOverwriteListenerIdentity);
+            Run("RelayRejectsInvalidSnapshotAndContinues", RelayRejectsInvalidSnapshotAndContinues);
+            Run("RelayDoesNotResendAfterRestart", RelayDoesNotResendAfterRestart);
+            Run("RelayRetriesAfterSendFailure", RelayRetriesAfterSendFailure);
+            Run("RelayFailureDoesNotStopTxtDelivery", RelayFailureDoesNotStopTxtDelivery);
             Run("LoadSettingsRelativeToIni", LoadSettingsRelativeToIni);
             Run("HistorySurvivesRestart", HistorySurvivesRestart);
             Run("HistoryReadShowsUtcPlusEight", HistoryReadShowsUtcPlusEight);
@@ -569,6 +585,144 @@ internal static class CollectorTests
         Assert(!unreachable.Send(ExampleHostStatus()), "network failure is reported");
         Assert(messages.Count == 2 && !string.Join(" ", messages.ToArray()).Contains("gateway-secret")
             && !string.Join(" ", messages.ToArray()).Contains("bearer-secret"), "host failure logs hide credentials");
+    }
+
+    private static string StatusJson(string deviceId)
+    {
+        return "{\"schemaVersion\":1,\"deviceId\":\"" + deviceId + "\",\"sampledAt\":\"2026-10-22T10:00:00+00:00\"," +
+            "\"cpuPercent\":12.5,\"memoryTotalBytes\":100,\"memoryAvailableBytes\":40," +
+            "\"systemDiskTotalBytes\":1000,\"systemDiskFreeBytes\":500,\"uptimeSeconds\":60}";
+    }
+
+    private static void WriteStatus(string root, string deviceId, string content)
+    {
+        string directory = Path.Combine(root, deviceId);
+        Directory.CreateDirectory(directory);
+        File.WriteAllText(Path.Combine(directory, "host-status.json"), content, new UTF8Encoding(false));
+    }
+
+    private static void RelayForwardsTwoDeviceIds()
+    {
+        InTempDirectory(delegate(string directory)
+        {
+            string source = Path.Combine(directory, "source");
+            WriteStatus(source, "FPT-01", StatusJson("FPT-01"));
+            WriteStatus(source, "FPT-02", StatusJson("FPT-02"));
+            List<string> names = new List<string>();
+            new HostStatusRelay(source, Path.Combine(directory, "host-checkpoints.json"), delegate(HostStatusSample sample)
+            {
+                names.Add(sample.HostName);
+                return true;
+            }, delegate(string message) { }).ForwardOnce(delegate { return false; });
+            names.Sort(StringComparer.Ordinal);
+            Assert(names.Count == 2 && names[0] == "FPT-01" && names[1] == "FPT-02", "relay uses each configured device ID");
+        });
+    }
+
+    private static void RelayDoesNotOverwriteListenerIdentity()
+    {
+        InTempDirectory(delegate(string directory)
+        {
+            string source = Path.Combine(directory, "source");
+            WriteStatus(source, Environment.MachineName, StatusJson(Environment.MachineName));
+            int sends = 0;
+            new HostStatusRelay(source, Path.Combine(directory, "host-checkpoints.json"), delegate(HostStatusSample sample)
+            { sends++; return true; }, delegate(string message) { }).ForwardOnce(delegate { return false; });
+            Assert(sends == 0, "device snapshot cannot overwrite listener computer status");
+        });
+    }
+
+    private static void RelayRejectsInvalidSnapshotAndContinues()
+    {
+        string valid = StatusJson("BAD");
+        string[] invalid = {
+            valid.Replace("\"schemaVersion\":1,", ""),
+            valid.Replace("\"schemaVersion\":1", "\"schemaVersion\":2"),
+            valid.Replace("\"deviceId\":\"BAD\"", "\"deviceId\":\"OTHER\""),
+            valid + new string(' ', 4096),
+            valid.Replace("2026-10-22T10:00:00+00:00", "not-a-time"),
+            valid.Replace("\"cpuPercent\":12.5", "\"cpuPercent\":101"),
+            valid.Replace("\"memoryTotalBytes\":100", "\"memoryTotalBytes\":0"),
+            valid.Replace("\"memoryAvailableBytes\":40", "\"memoryAvailableBytes\":101"),
+            valid.Replace("\"systemDiskFreeBytes\":500", "\"systemDiskFreeBytes\":1001"),
+            valid.Replace("\"uptimeSeconds\":60", "\"uptimeSeconds\":-1"),
+            "{"
+        };
+        foreach (string payload in invalid)
+        {
+            InTempDirectory(delegate(string directory)
+            {
+                string source = Path.Combine(directory, "source");
+                WriteStatus(source, "BAD", payload);
+                WriteStatus(source, "GOOD", StatusJson("GOOD"));
+                List<string> names = new List<string>();
+                new HostStatusRelay(source, Path.Combine(directory, "host-checkpoints.json"), delegate(HostStatusSample sample)
+                {
+                    names.Add(sample.HostName);
+                    return true;
+                }, delegate(string message) { }).ForwardOnce(delegate { return false; });
+                Assert(names.Count == 1 && names[0] == "GOOD", "bad snapshot must not block a good neighbor");
+            });
+        }
+    }
+
+    private static void RelayDoesNotResendAfterRestart()
+    {
+        InTempDirectory(delegate(string directory)
+        {
+            string source = Path.Combine(directory, "source");
+            string checkpoint = Path.Combine(directory, "host-checkpoints.json");
+            WriteStatus(source, "FPT-01", StatusJson("FPT-01"));
+            int sends = 0;
+            Func<HostStatusSample, bool> send = delegate(HostStatusSample sample) { sends++; return true; };
+            new HostStatusRelay(source, checkpoint, send, delegate(string message) { }).ForwardOnce(delegate { return false; });
+            new HostStatusRelay(source, checkpoint, send, delegate(string message) { }).ForwardOnce(delegate { return false; });
+            Assert(sends == 1, "restarted relay skips an unchanged successful snapshot");
+            WriteStatus(source, "FPT-01", StatusJson("FPT-01").Replace("10:00:00", "10:01:00"));
+            new HostStatusRelay(source, checkpoint, send, delegate(string message) { }).ForwardOnce(delegate { return false; });
+            Assert(sends == 2, "new sampledAt forwards a new snapshot");
+        });
+    }
+
+    private static void RelayRetriesAfterSendFailure()
+    {
+        InTempDirectory(delegate(string directory)
+        {
+            string source = Path.Combine(directory, "source");
+            WriteStatus(source, "FPT-01", StatusJson("FPT-01"));
+            int attempts = 0;
+            HostStatusRelay relay = new HostStatusRelay(source, Path.Combine(directory, "host-checkpoints.json"),
+                delegate(HostStatusSample sample) { attempts++; return attempts > 1; }, delegate(string message) { });
+            relay.ForwardOnce(delegate { return false; });
+            relay.ForwardOnce(delegate { return false; });
+            relay.ForwardOnce(delegate { return false; });
+            Assert(attempts == 2, "failed send retries once then persists success");
+        });
+    }
+
+    private static void RelayFailureDoesNotStopTxtDelivery()
+    {
+        InTempDirectory(delegate(string directory)
+        {
+            using (HttpFixture server = new HttpFixture(204))
+            {
+                server.HostStatusCode = 500;
+                server.ExpectedHostRequests = 2;
+                Settings settings = RuntimeSettings(directory, server.BaseUrl);
+                WriteStatus(settings.SourceRoot, "FPT-01", StatusJson("FPT-01"));
+                new PendingEventStore(settings.QueueFile).Enqueue(EventWithRecord("R-relay-independent"));
+                CollectorRuntime runtime = new CollectorRuntime(settings, delegate(string message) { }, null, null, null,
+                    ExampleHostStatus);
+                runtime.Start();
+                server.WaitForRequests();
+                Assert(runtime.StopAsync().Wait(5000), "runtime stops after relay and TXT delivery");
+                Assert(new PendingEventStore(settings.QueueFile).Snapshot().Count == 0,
+                    "TXT event succeeds while relay HTTP returns 500");
+                int deviceRequests = server.Requests.FindAll(delegate(CapturedRequest request)
+                { return request.Body.Contains("\"hostName\":\"FPT-01\""); }).Count;
+                Assert(deviceRequests == 1, "device status attempted separately");
+            }
+        });
     }
 
     private static Dictionary<string, object> EventWithRecord(string recordNo)

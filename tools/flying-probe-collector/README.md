@@ -1,6 +1,6 @@
 # 飞针机文件采集程序
 
-`FlyingProbeCollector.exe` 是带窗口的独立飞针机采集程序。它读取飞针机数据目录，将每个设备目录中的 TXT 测试计数作为快照提交给 QMS Telemetry v1，同时上报运行电脑的状态。它与其他监听器的进程、配置、队列和日志互不共用。
+`FlyingProbeCollector.exe` 是带窗口的独立飞针机采集程序。它读取飞针机数据目录，将每个设备目录中的 TXT 测试计数作为快照提交给 QMS Telemetry v1，同时上报 SCBGX 监听电脑的状态，并转发各飞针机电脑写入共享目录的状态。它与其他监听器的进程、配置、队列和日志互不共用。
 
 ## 构建与部署
 
@@ -26,6 +26,8 @@
 
 状态上报使用现有 `QmsBaseUrl`、`GatewayToken`、可选 `BearerToken` 和请求超时配置。它与 TXT 同步独立运行；失败只在日志中记录错误类型或 HTTP 状态，下轮发送新状态，不进入 TXT 待发队列或同步记录。停止程序会等待正在发送的状态请求结束，最长受现有请求超时限制。
 
+每台飞针机上的 `IniShareSync.exe --status-only` 每分钟将状态写成 `<SourceRoot>\<device_id>\host-status.json`。本程序只读取设备目录第一层的这一文件，校验版本、目录编号、UTC 时间、大小及数值范围后，用现有网关凭据发送到 QMS。发送请求的 `hostName` 是配置中的设备编号，须在 QMS“设备网关映射”中绑定到该飞针机；SCBGX 电脑名仍单独代表监听电脑。设备端无需保存 QMS 凭据。转发成功后，`data\scan-checkpoints.json.host-status.json` 记录快照指纹；相同内容不会重复发送，也不会延长已停机设备的在线时间。QMS 或共享目录故障时，下一轮会重试最新快照；状态错误不影响 TXT 待发队列。
+
 ## 现场验证
 
 1. 用运行程序的 Windows 账户打开共享目录，确认能看到设备子目录和 TXT 文件。
@@ -34,3 +36,4 @@
 4. 修改一份测试 TXT 的 `Test_Counters` 后再次观察；应新增一条快照，未改动的文件不重复上报。现场测试时请只使用允许修改的样本文件。
 5. 临时断开 QMS 后检查 `pending-events.json` 保留待发事件，恢复 QMS 后确认补传。无需为了测试断开飞针机共享目录。
 6. 启动后确认 QMS 的 `GET /api/v1/gateway/host-status` 出现该电脑，等待超过 60 秒再核对第二次采样；将 CPU、内存、系统盘和开机时长与 Windows 系统读数比较，并检查 `receivedAt` 更新。
+7. 在一台真实飞针机上运行 `IniShareSync.exe --status-only`，确认共享目录的 `<device_id>\host-status.json` 出现且内容随时间更新。检查 QMS 中同一 `device_id` 关联正确设备，SCBGX 监听电脑仍是单独一行。停用该设备的状态任务超过 5 分钟，确认设备离线；恢复任务后应重新在线。
