@@ -9,6 +9,7 @@ using System.Net.Sockets;
 using System.Reflection;
 using System.Text;
 using System.Threading;
+using System.Threading.Tasks;
 using System.Web.Script.Serialization;
 
 internal static class CollectorTests
@@ -44,6 +45,14 @@ internal static class CollectorTests
                 Run("HostStatusPostFailures", HostStatusPostFailures);
                 return 0;
             }
+            if (args.Length == 1 && args[0] == "--runtime-host")
+            {
+                Run("HostWorkerRecoversAndStops", HostWorkerRecoversAndStops);
+                Run("RuntimeHostFailureDoesNotBlockTxt", RuntimeHostFailureDoesNotBlockTxt);
+                Run("StopWaitsForHostRequest", StopWaitsForHostRequest);
+                Run("FatalTxtWorkerStopsHostWorker", FatalTxtWorkerStopsHostWorker);
+                return 0;
+            }
             Run("ParseSample", ParseSample);
             Run("RejectMalformed", RejectMalformed);
             Run("MapEvent", MapEvent);
@@ -75,6 +84,10 @@ internal static class CollectorTests
             Run("AcceptedWithoutHistoryStaysQueued", AcceptedWithoutHistoryStaysQueued);
             Run("HistoryNeverContainsTokens", HistoryNeverContainsTokens);
             Run("RuntimeStartStopReleasesLock", RuntimeStartStopReleasesLock);
+            Run("HostWorkerRecoversAndStops", HostWorkerRecoversAndStops);
+            Run("RuntimeHostFailureDoesNotBlockTxt", RuntimeHostFailureDoesNotBlockTxt);
+            Run("StopWaitsForHostRequest", StopWaitsForHostRequest);
+            Run("FatalTxtWorkerStopsHostWorker", FatalTxtWorkerStopsHostWorker);
             Run("StopDuringScanKeepsUnprocessedFiles", StopDuringScanKeepsUnprocessedFiles);
             Run("StopDoesNotSendNextPendingEvent", StopDoesNotSendNextPendingEvent);
             Run("SlowResponseHonorsOverallTimeout", SlowResponseHonorsOverallTimeout);
@@ -518,7 +531,7 @@ internal static class CollectorTests
 
     private static void HostStatusPost()
     {
-        using (HttpFixture server = new HttpFixture(204))
+        using (HttpFixture server = HttpFixture.HostOnly(204))
         {
             HostStatusSender sender = new HostStatusSender(server.BaseUrl, "gateway-secret", "bearer-secret", 2,
                 delegate(string message) { });
@@ -543,7 +556,7 @@ internal static class CollectorTests
     {
         List<string> messages = new List<string>();
         using (HttpFixture login = new HttpFixture(200))
-        using (HttpFixture server = new HttpFixture(302))
+        using (HttpFixture server = HttpFixture.HostOnly(302))
         {
             server.RedirectLocation = login.BaseUrl + "/login";
             HostStatusSender sender = new HostStatusSender(server.BaseUrl, "gateway-secret", "", 2, messages.Add);
@@ -692,6 +705,112 @@ internal static class CollectorTests
         });
     }
 
+    private static void HostWorkerRecoversAndStops()
+    {
+        using (ManualResetEvent stop = new ManualResetEvent(false))
+        using (ManualResetEvent repeated = new ManualResetEvent(false))
+        {
+            int ticks = 0;
+            List<string> errors = new List<string>();
+            Task task = Task.Factory.StartNew(delegate
+            {
+                HostStatusWorker.Run(stop, TimeSpan.FromMilliseconds(20), delegate
+                {
+                    if (Interlocked.Increment(ref ticks) == 1) throw new IOException("sample failed");
+                    repeated.Set();
+                }, errors.Add);
+            });
+            Assert(repeated.WaitOne(2000), "host worker retries after sampling error");
+            stop.Set();
+            Assert(task.Wait(2000), "host worker stops promptly");
+            Assert(ticks >= 2 && errors.Count == 1 && errors[0].Contains("IOException"), "host worker logs safe error class");
+        }
+    }
+
+    private static void RuntimeHostFailureDoesNotBlockTxt()
+    {
+        InTempDirectory(delegate(string directory)
+        {
+            using (HttpFixture server = new HttpFixture(204))
+            {
+                server.HostStatusCode = 500;
+                server.ExpectedHostRequests = 1;
+                Settings settings = RuntimeSettings(directory, server.BaseUrl);
+                new PendingEventStore(settings.QueueFile).Enqueue(EventWithRecord("R-host-independent"));
+                List<string> messages = new List<string>();
+                CollectorRuntime runtime = new CollectorRuntime(settings, messages.Add, null, null, null,
+                    ExampleHostStatus);
+                runtime.Start();
+                server.WaitForRequests();
+                Assert(runtime.StopAsync().Wait(5000), "runtime stops after both requests");
+                Assert(new PendingEventStore(settings.QueueFile).Snapshot().Count == 0, "TXT event succeeds after host HTTP failure");
+                Assert(server.Requests.Exists(delegate(CapturedRequest request)
+                { return request.FirstLine.Contains("/api/v1/gateway/host-status"); }), "host status posted immediately");
+                Assert(messages.Exists(delegate(string message) { return message.Contains("Host status delivery failed: HTTP 500"); }),
+                    "host failure logged separately");
+            }
+        });
+    }
+
+    private static void StopWaitsForHostRequest()
+    {
+        InTempDirectory(delegate(string directory)
+        {
+            TcpListener listener = new TcpListener(IPAddress.Loopback, 0);
+            listener.Start();
+            using (ManualResetEvent connected = new ManualResetEvent(false))
+            using (ManualResetEvent release = new ManualResetEvent(false))
+            {
+                Thread server = new Thread(delegate()
+                {
+                    try
+                    {
+                        using (TcpClient client = listener.AcceptTcpClient())
+                        using (NetworkStream stream = client.GetStream())
+                        {
+                            connected.Set();
+                            release.WaitOne(5000);
+                            byte[] response = Encoding.ASCII.GetBytes("HTTP/1.1 204 No Content\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+                            stream.Write(response, 0, response.Length);
+                        }
+                    }
+                    catch (SocketException) { }
+                    catch (IOException) { }
+                });
+                server.IsBackground = true;
+                server.Start();
+                try
+                {
+                    string url = "http://127.0.0.1:" + ((IPEndPoint)listener.LocalEndpoint).Port;
+                    CollectorRuntime runtime = new CollectorRuntime(RuntimeSettings(directory, url),
+                        delegate(string message) { }, null, null, null, ExampleHostStatus);
+                    runtime.Start();
+                    Assert(connected.WaitOne(5000), "host request started");
+                    Task stopping = runtime.StopAsync();
+                    Assert(!stopping.IsCompleted, "stop waits for in-flight host request");
+                    release.Set();
+                    Assert(stopping.Wait(5000), "stop finishes after host request");
+                }
+                finally { release.Set(); listener.Stop(); server.Join(1000); }
+            }
+        });
+    }
+
+    private static void FatalTxtWorkerStopsHostWorker()
+    {
+        InTempDirectory(delegate(string directory)
+        {
+            Settings settings = RuntimeSettings(directory, "http://127.0.0.1:1");
+            CollectorRuntime runtime = new CollectorRuntime(settings, delegate(string message) { }, null,
+                delegate(int count) { throw new InvalidOperationException("display failed"); }, null, ExampleHostStatus);
+            runtime.Start();
+            try { runtime.Completion.Wait(5000); }
+            catch (AggregateException) { }
+            Assert(runtime.Completion.IsCompleted && runtime.Completion.IsFaulted, "fatal TXT worker ends whole runtime");
+            using (new CollectorOwnership(settings.QueueFile)) { }
+        });
+    }
+
     private static void StopDuringScanKeepsUnprocessedFiles()
     {
         InTempDirectory(delegate(string directory)
@@ -727,6 +846,7 @@ internal static class CollectorTests
             using (HttpFixture server = new HttpFixture(204))
             {
                 Settings settings = RuntimeSettings(directory, server.BaseUrl);
+                settings.RequestTimeoutSeconds = 1;
                 PendingEventStore queue = new PendingEventStore(settings.QueueFile);
                 queue.Enqueue(EventWithRecord("R-1"));
                 queue.Enqueue(EventWithRecord("R-2"));
@@ -1016,11 +1136,25 @@ internal static class CollectorTests
         private Exception failure;
         public string BaseUrl { get; private set; }
         public string RedirectLocation { get; set; }
+        public int HostStatusCode { get; set; }
+        public int ExpectedHostRequests { get; set; }
         public List<CapturedRequest> Requests { get { return requests; } }
 
         public HttpFixture(params int[] statuses)
+            : this(statuses, 204, 0)
+        {
+        }
+
+        public static HttpFixture HostOnly(int status)
+        {
+            return new HttpFixture(new int[0], status, 1);
+        }
+
+        private HttpFixture(int[] statuses, int hostStatusCode, int expectedHostRequests)
         {
             this.statuses = statuses;
+            HostStatusCode = hostStatusCode;
+            ExpectedHostRequests = expectedHostRequests;
             listener = new TcpListener(IPAddress.Loopback, 0);
             listener.Start();
             BaseUrl = "http://127.0.0.1:" + ((IPEndPoint)listener.LocalEndpoint).Port.ToString(CultureInfo.InvariantCulture);
@@ -1034,14 +1168,20 @@ internal static class CollectorTests
             if (!thread.Join(5000)) throw new Exception("HTTP fixture timed out; captured=" + requests.Count.ToString(CultureInfo.InvariantCulture) +
                 "; failure=" + (failure == null ? "none" : failure.ToString()));
             if (failure != null) throw new Exception("HTTP fixture failed", failure);
-            Assert(requests.Count == statuses.Length, "expected HTTP request count");
+            int telemetryCount = requests.FindAll(delegate(CapturedRequest request)
+            { return !request.FirstLine.Contains("/api/v1/gateway/host-status"); }).Count;
+            int hostCount = requests.Count - telemetryCount;
+            Assert(telemetryCount == statuses.Length && hostCount >= ExpectedHostRequests,
+                "expected HTTP request count");
         }
 
         private void Run()
         {
             try
             {
-                foreach (int status in statuses)
+                int telemetryIndex = 0;
+                int hostCount = 0;
+                while (telemetryIndex < statuses.Length || hostCount < ExpectedHostRequests)
                 {
                     using (TcpClient client = listener.AcceptTcpClient())
                     using (NetworkStream stream = client.GetStream())
@@ -1071,6 +1211,10 @@ internal static class CollectorTests
                         }
                         request.Body = new string(body);
                         requests.Add(request);
+                        bool host = request.FirstLine.Contains("/api/v1/gateway/host-status");
+                        int status = host ? HostStatusCode : statuses[telemetryIndex];
+                        if (host) hostCount++;
+                        else telemetryIndex++;
                         string location = status >= 300 && status < 400 && RedirectLocation != null ?
                             "Location: " + RedirectLocation + "\r\n" : "";
                         byte[] response = Encoding.ASCII.GetBytes("HTTP/1.1 " + status.ToString(CultureInfo.InvariantCulture) +

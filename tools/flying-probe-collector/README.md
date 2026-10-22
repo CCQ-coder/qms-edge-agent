@@ -1,10 +1,12 @@
 # 飞针机文件采集程序
 
-`FlyingProbeCollector.exe` 是带窗口的独立飞针机采集程序。它只读取飞针机数据目录，将每个设备目录中的 TXT 测试计数作为快照提交给 QMS Telemetry v1。它与其他监听器的进程、配置、队列和日志互不共用。
+`FlyingProbeCollector.exe` 是带窗口的独立飞针机采集程序。它读取飞针机数据目录，将每个设备目录中的 TXT 测试计数作为快照提交给 QMS Telemetry v1，同时上报运行电脑的状态。它与其他监听器的进程、配置、队列和日志互不共用。
 
 ## 构建与部署
 
 在已安装 .NET Framework 4.x 编译器的 Windows 电脑上运行 `tools\flying-probe-collector\build.cmd`。发布目录为 `outputs\flying-probe-collector`；将整个目录复制到现场电脑。SCBGX 上的采集目录使用本地路径 `E:\飞针机`，QMS 地址为 `http://192.168.1.98:8080`；在其他电脑部署时按实际位置修改。现场运行账户需要能读取采集目录，并能写入程序目录下的 `data` 和 `logs`。
+
+先升级 QMS，使其具备 `POST /api/v1/gateway/host-status` 接口和最新状态表迁移，再更新本程序。旧版 QMS 拒绝电脑状态上报时，TXT 文件同步仍可继续。
 
 双击 `FlyingProbeCollector.exe` 打开窗口，在“采集配置”中填写数据目录、QMS 地址和真实网关令牌，然后点击“保存配置”和“启动采集”。生产 QMS 需要服务账号认证时，填写不带 `Bearer ` 前缀的 `BearerToken`。令牌框会遮挡内容；请勿将含真实令牌的 INI 提交到仓库。每个设备子目录名必须在 QMS 的“设备网关映射”中映射到对应设备的 `machineName`。
 
@@ -18,6 +20,12 @@
 
 程序运行时独占 `data\pending-events.json.lock`，避免重复启动造成队列覆盖。若第二份程序提示 `already in use`，先检查现有采集进程；进程退出后锁会自动释放，锁文件本身留在磁盘上。QMS 返回重定向时会保留事件并重试，不把登录页的成功响应算作上报成功。
 
+## 电脑状态
+
+启动后立即采样一次，此后每 60 秒向当前 QMS 上报电脑名、UTC 采样时间、CPU 使用率、物理内存、系统盘空间和开机时长。首次 CPU 采样为 `null`，下一轮才有百分比。QMS 按租户和电脑名只保存最新状态；登录后可用 `GET /api/v1/gateway/host-status` 查看 `receivedAt` 判断数据是否新鲜。电脑名在同一租户中应唯一。
+
+状态上报使用现有 `QmsBaseUrl`、`GatewayToken`、可选 `BearerToken` 和请求超时配置。它与 TXT 同步独立运行；失败只在日志中记录错误类型或 HTTP 状态，下轮发送新状态，不进入 TXT 待发队列或同步记录。停止程序会等待正在发送的状态请求结束，最长受现有请求超时限制。
+
 ## 现场验证
 
 1. 用运行程序的 Windows 账户打开共享目录，确认能看到设备子目录和 TXT 文件。
@@ -25,3 +33,4 @@
 3. 启动程序，等待两轮扫描；确认窗口的“同步记录”出现“已入队”和“同步成功”，QMS 遥测历史中出现 `FLYING_PROBE_TEST_COUNTERS` 事件。
 4. 修改一份测试 TXT 的 `Test_Counters` 后再次观察；应新增一条快照，未改动的文件不重复上报。现场测试时请只使用允许修改的样本文件。
 5. 临时断开 QMS 后检查 `pending-events.json` 保留待发事件，恢复 QMS 后确认补传。无需为了测试断开飞针机共享目录。
+6. 启动后确认 QMS 的 `GET /api/v1/gateway/host-status` 出现该电脑，等待超过 60 秒再核对第二次采样；将 CPU、内存、系统盘和开机时长与 Windows 系统读数比较，并检查 `receivedAt` 更新。
