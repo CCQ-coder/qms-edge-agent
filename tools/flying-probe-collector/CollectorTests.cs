@@ -26,6 +26,24 @@ internal static class CollectorTests
                 else Console.WriteLine("SKIP CaptureHostStatusOnWindows (requires Windows)");
                 return 0;
             }
+            if (args.Length == 1 && args[0] == "--host-sender")
+            {
+                Run("HostStatusPost", HostStatusPost);
+                Run("HostStatusPostFailures", HostStatusPostFailures);
+                return 0;
+            }
+            if (args.Length == 1 && args[0] == "--http")
+            {
+                Run("AcceptedPostRemovesEvent", AcceptedPostRemovesEvent);
+                Run("RejectOneContinueNext", RejectOneContinueNext);
+                Run("NetworkFailureRetains", NetworkFailureRetains);
+                Run("RedirectRetainsEvent", RedirectRetainsEvent);
+                Run("NoBearerWhenEmpty", NoBearerWhenEmpty);
+                Run("SlowResponseHonorsOverallTimeout", SlowResponseHonorsOverallTimeout);
+                Run("HostStatusPost", HostStatusPost);
+                Run("HostStatusPostFailures", HostStatusPostFailures);
+                return 0;
+            }
             Run("ParseSample", ParseSample);
             Run("RejectMalformed", RejectMalformed);
             Run("MapEvent", MapEvent);
@@ -48,6 +66,8 @@ internal static class CollectorTests
             Run("NetworkFailureRetains", NetworkFailureRetains);
             Run("RedirectRetainsEvent", RedirectRetainsEvent);
             Run("NoBearerWhenEmpty", NoBearerWhenEmpty);
+            Run("HostStatusPost", HostStatusPost);
+            Run("HostStatusPostFailures", HostStatusPostFailures);
             Run("LoadSettingsRelativeToIni", LoadSettingsRelativeToIni);
             Run("HistorySurvivesRestart", HistorySurvivesRestart);
             Run("HistoryReadShowsUtcPlusEight", HistoryReadShowsUtcPlusEight);
@@ -488,6 +508,54 @@ internal static class CollectorTests
                 Assert(!server.Requests[0].Headers.ContainsKey("Authorization"), "blank bearer omits Authorization");
             }
         });
+    }
+
+    private static HostStatusSample ExampleHostStatus()
+    {
+        return new HostStatusSample("SCBGX", new DateTime(2026, 10, 22, 10, 0, 0, DateTimeKind.Utc),
+            12.5, 17179869184, 8589934592, 512110190592, 171798691840, 3600);
+    }
+
+    private static void HostStatusPost()
+    {
+        using (HttpFixture server = new HttpFixture(204))
+        {
+            HostStatusSender sender = new HostStatusSender(server.BaseUrl, "gateway-secret", "bearer-secret", 2,
+                delegate(string message) { });
+            Assert(sender.Send(ExampleHostStatus()), "host status accepted");
+            server.WaitForRequests();
+            CapturedRequest request = server.Requests[0];
+            Assert(request.FirstLine == "POST /api/v1/gateway/host-status HTTP/1.1", "host status endpoint");
+            Assert(request.Headers["X-Gateway-Token"] == "gateway-secret", "host gateway token");
+            Assert(request.Headers["Authorization"] == "Bearer bearer-secret", "host bearer token");
+            Dictionary<string, object> body = new JavaScriptSerializer().DeserializeObject(request.Body) as Dictionary<string, object>;
+            Assert(Text(body, "hostName") == "SCBGX", "host name payload");
+            Assert(DateTime.Parse(Text(body, "sampledAt"), CultureInfo.InvariantCulture,
+                DateTimeStyles.AdjustToUniversal) == ExampleHostStatus().SampledAtUtc, "UTC sample time payload");
+            Assert(Convert.ToDouble(body["cpuPercent"], CultureInfo.InvariantCulture) == 12.5, "CPU payload");
+            Assert(Convert.ToInt64(body["memoryTotalBytes"], CultureInfo.InvariantCulture) == 17179869184, "memory bytes payload");
+            Assert(Convert.ToInt64(body["systemDiskFreeBytes"], CultureInfo.InvariantCulture) == 171798691840, "disk bytes payload");
+            Assert(Convert.ToInt64(body["uptimeSeconds"], CultureInfo.InvariantCulture) == 3600, "uptime seconds payload");
+        }
+    }
+
+    private static void HostStatusPostFailures()
+    {
+        List<string> messages = new List<string>();
+        using (HttpFixture login = new HttpFixture(200))
+        using (HttpFixture server = new HttpFixture(302))
+        {
+            server.RedirectLocation = login.BaseUrl + "/login";
+            HostStatusSender sender = new HostStatusSender(server.BaseUrl, "gateway-secret", "", 2, messages.Add);
+            Assert(!sender.Send(ExampleHostStatus()), "redirect is a failure");
+            server.WaitForRequests();
+            Assert(login.Requests.Count == 0, "host status does not follow redirect");
+            Assert(!server.Requests[0].Headers.ContainsKey("Authorization"), "blank host bearer omitted");
+        }
+        HostStatusSender unreachable = new HostStatusSender("http://127.0.0.1:1", "gateway-secret", "bearer-secret", 1, messages.Add);
+        Assert(!unreachable.Send(ExampleHostStatus()), "network failure is reported");
+        Assert(messages.Count == 2 && !string.Join(" ", messages.ToArray()).Contains("gateway-secret")
+            && !string.Join(" ", messages.ToArray()).Contains("bearer-secret"), "host failure logs hide credentials");
     }
 
     private static Dictionary<string, object> EventWithRecord(string recordNo)
