@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Net;
 using System.Net.Sockets;
+using System.Reflection;
 using System.Text;
 using System.Threading;
 using System.Web.Script.Serialization;
@@ -20,6 +21,9 @@ internal static class BtfTests
         Run("SnapshotFields", SnapshotFields);
         Run("DisplayBufferBoundsAndPreservesOrder", DisplayBufferBoundsAndPreservesOrder);
         Run("DisplayBufferClearAndDrain", DisplayBufferClearAndDrain);
+        Run("MonitorBatchesTwentyFiveMachines", MonitorBatchesTwentyFiveMachines);
+        Run("MonitorClearsPendingDisplay", MonitorClearsPendingDisplay);
+        Run("MonitorHistoryIsBoundedAndUsesReceiveTime", MonitorHistoryIsBoundedAndUsesReceiveTime);
         Run("QueueSurvivesRestart", QueueSurvivesRestart);
         Run("QueueRecoversPartialTail", QueueRecoversPartialTail);
         Run("QmsReportInterval", QmsReportInterval);
@@ -114,6 +118,121 @@ internal static class BtfTests
         Equal("new", batch.Logs[0]);
         Equal(0, buffer.Drain().Machines.Count);
         Equal(0, buffer.Drain().Logs.Count);
+    }
+
+    private static void MonitorBatchesTwentyFiveMachines()
+    {
+        using (BtfMainForm form = new BtfMainForm("unused.json"))
+        {
+            TableLayoutPanel grid = FindControl<TableLayoutPanel>(form);
+            for (int index = 0; index < 25; index++)
+                InvokeForm(form, "ReceiveSnapshot", new BtfSnapshot {
+                    MachineName = "CNC-" + index, State = "WORK", DeviceTime = "12:00:00", WorkCount = index
+                });
+            DisplayBuffer(form).AddLog("first display log");
+            DisplayBuffer(form).AddLog("second display log");
+            Equal(0, grid.Controls.Count);
+
+            InvokeForm(form, "FlushDisplay");
+            Equal(25, grid.Controls.Count);
+            TextBox output = FindControl<TextBox>(Card(grid, "CNC-24"));
+            if (!output.Text.Contains("计数 24")) throw new Exception("Latest machine snapshot is missing");
+            TextBox log = FormField<TextBox>(form, "logBox");
+            if (log.Text.IndexOf("first display log", StringComparison.Ordinal) < 0 ||
+                log.Text.IndexOf("first display log", StringComparison.Ordinal) >=
+                log.Text.IndexOf("second display log", StringComparison.Ordinal))
+                throw new Exception("Display logs are out of order");
+        }
+    }
+
+    private static void MonitorClearsPendingDisplay()
+    {
+        using (BtfMainForm form = new BtfMainForm("unused.json"))
+        {
+            DisplayBuffer(form).AddSnapshot(new BtfSnapshot { MachineName = "CNC-1", State = "WORK" }, DateTime.UtcNow);
+            DisplayBuffer(form).AddLog("stale display log");
+            InvokeForm(form, "ClearDisplay");
+            InvokeForm(form, "FlushDisplay");
+            Equal(0, FindControl<TableLayoutPanel>(form).Controls.Count);
+            if (FormField<TextBox>(form, "logBox").Text.Contains("stale display log"))
+                throw new Exception("Cleared log appeared again");
+        }
+    }
+
+    private static void MonitorHistoryIsBoundedAndUsesReceiveTime()
+    {
+        using (BtfMainForm form = new BtfMainForm("unused.json"))
+        {
+            FormField<BtfSettings>(form, "settings", new BtfSettings { IdleSeconds = 10 });
+            BtfDisplayBuffer buffer = DisplayBuffer(form);
+            buffer.AddSnapshot(new BtfSnapshot { MachineName = "CNC-1", State = "WORK", ProgramName = "old" },
+                DateTime.UtcNow.AddMinutes(-1));
+            InvokeForm(form, "FlushDisplay");
+            InvokeForm(form, "UpdateStatus");
+            TableLayoutPanel grid = FindControl<TableLayoutPanel>(form);
+            if (!Card(grid, "CNC-1").Text.Contains("离线"))
+                throw new Exception("Delayed UI refresh incorrectly marked an old snapshot online");
+
+            for (int index = 0; index < 200; index++)
+                buffer.AddSnapshot(new BtfSnapshot { MachineName = "CNC-1", State = "WORK",
+                    ProgramName = "SEQ-" + index }, DateTime.UtcNow);
+            InvokeForm(form, "FlushDisplay");
+            for (int index = 200; index <= 240; index++)
+                buffer.AddSnapshot(new BtfSnapshot { MachineName = "CNC-1", State = "WORK",
+                    ProgramName = "SEQ-" + index }, DateTime.UtcNow);
+            InvokeForm(form, "FlushDisplay");
+            TextBox output = FindControl<TextBox>(Card(grid, "CNC-1"));
+            if (output.Lines.Length > 201 || output.Text.Contains("SEQ-0") || !output.Text.Contains("SEQ-240"))
+                throw new Exception("Machine history did not keep the newest 200 lines");
+        }
+    }
+
+    private static BtfDisplayBuffer DisplayBuffer(BtfMainForm form)
+    {
+        return FormField<BtfDisplayBuffer>(form, "displayBuffer");
+    }
+
+    private static T FormField<T>(BtfMainForm form, string name)
+    {
+        FieldInfo field = typeof(BtfMainForm).GetField(name, BindingFlags.Instance | BindingFlags.NonPublic);
+        if (field == null) throw new Exception(name + " field is missing");
+        return (T)field.GetValue(form);
+    }
+
+    private static void FormField<T>(BtfMainForm form, string name, T value)
+    {
+        FieldInfo field = typeof(BtfMainForm).GetField(name, BindingFlags.Instance | BindingFlags.NonPublic);
+        if (field == null) throw new Exception(name + " field is missing");
+        field.SetValue(form, value);
+    }
+
+    private static void InvokeForm(BtfMainForm form, string name, params object[] args)
+    {
+        MethodInfo method = typeof(BtfMainForm).GetMethod(name, BindingFlags.Instance | BindingFlags.NonPublic);
+        if (method == null) throw new Exception(name + " method is missing");
+        method.Invoke(form, args);
+    }
+
+    private static T FindControl<T>(Control root) where T : Control
+    {
+        foreach (Control child in root.Controls)
+        {
+            T match = child as T;
+            if (match != null) return match;
+            match = FindControl<T>(child);
+            if (match != null) return match;
+        }
+        return null;
+    }
+
+    private static GroupBox Card(TableLayoutPanel grid, string name)
+    {
+        foreach (Control child in grid.Controls)
+        {
+            GroupBox group = child as GroupBox;
+            if (group != null && group.Text.StartsWith(name + "  ·  ", StringComparison.Ordinal)) return group;
+        }
+        throw new Exception(name + " card is missing");
     }
 
     private static void SplitAndCombinedFrames()

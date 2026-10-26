@@ -10,7 +10,9 @@ internal sealed class BtfMainForm : Form
 {
     private readonly string settingsPath;
     private readonly object logLock = new object();
+    private readonly BtfDisplayBuffer displayBuffer = new BtfDisplayBuffer();
     private readonly Dictionary<string, MachineView> machines = new Dictionary<string, MachineView>(StringComparer.OrdinalIgnoreCase);
+    private readonly List<string> logLines = new List<string>();
     private readonly Panel machineArea = new Panel();
     private readonly TableLayoutPanel machineGrid = new TableLayoutPanel();
     private readonly TextBox logBox = new TextBox();
@@ -21,6 +23,7 @@ internal sealed class BtfMainForm : Form
     private BtfSettings settings;
     private BtfServer server;
     private bool paused;
+    private DateTime nextStatusUtc = DateTime.MinValue;
 
     internal BtfMainForm(string settingsPath)
     {
@@ -32,9 +35,18 @@ internal sealed class BtfMainForm : Form
         Font = new Font("Microsoft YaHei UI", 9F);
         Build();
         Shown += delegate { StartServer(); };
-        FormClosing += delegate { StopServer(); };
-        statusTimer.Interval = 1000;
-        statusTimer.Tick += delegate { UpdateStatus(); };
+        FormClosing += delegate { statusTimer.Stop(); StopServer(); };
+        statusTimer.Interval = 250;
+        statusTimer.Tick += delegate
+        {
+            FlushDisplay();
+            DateTime now = DateTime.UtcNow;
+            if (now >= nextStatusUtc)
+            {
+                UpdateStatus();
+                nextStatusUtc = now.AddSeconds(1);
+            }
+        };
         statusTimer.Start();
     }
 
@@ -145,6 +157,8 @@ internal sealed class BtfMainForm : Form
 
     private void ClearDisplay()
     {
+        displayBuffer.Clear();
+        logLines.Clear();
         logBox.Clear();
         foreach (MachineView view in machines.Values) { view.Lines.Clear(); view.Output.Clear(); }
     }
@@ -166,35 +180,72 @@ internal sealed class BtfMainForm : Form
 
     private void ReceiveSnapshot(BtfSnapshot snapshot)
     {
-        if (IsDisposed || !IsHandleCreated) return;
-        try { BeginInvoke((MethodInvoker)delegate { ShowSnapshot(snapshot); }); }
-        catch (InvalidOperationException) { }
+        if (IsDisposed || Disposing) return;
+        displayBuffer.AddSnapshot(snapshot, DateTime.UtcNow);
     }
 
-    private void ShowSnapshot(BtfSnapshot snapshot)
+    private void FlushDisplay()
     {
-        MachineView view;
-        if (!machines.TryGetValue(snapshot.MachineName, out view))
+        BtfDisplayBatch batch = displayBuffer.Drain();
+        bool addedMachine = false;
+        foreach (KeyValuePair<string, List<BtfDisplaySnapshot>> item in batch.Machines)
         {
-            view = new MachineView(snapshot.MachineName);
-            machines.Add(snapshot.MachineName, view);
-            RebuildGrid();
+            MachineView view;
+            if (!machines.TryGetValue(item.Key, out view))
+            {
+                view = new MachineView(item.Key);
+                machines.Add(item.Key, view);
+                addedMachine = true;
+            }
+            StringBuilder addedLines = new StringBuilder();
+            foreach (BtfDisplaySnapshot received in item.Value)
+            {
+                BtfSnapshot snapshot = received.Snapshot;
+                view.LastSeenUtc = received.ReceivedUtc;
+                if (!string.Equals(view.LastState, snapshot.State, StringComparison.Ordinal))
+                {
+                    view.LastState = snapshot.State;
+                    view.Title.Text = view.MachineName + "  ·  " + StateText(snapshot.State);
+                }
+                string line = SnapshotLine(snapshot);
+                view.Lines.Add(line);
+                addedLines.Append(line).Append(Environment.NewLine);
+            }
+            if (view.Lines.Count > 240)
+            {
+                view.Lines.RemoveRange(0, view.Lines.Count - 200);
+                view.Output.Lines = view.Lines.ToArray();
+            }
+            else view.Output.AppendText(addedLines.ToString());
+            view.Output.SelectionStart = view.Output.TextLength;
+            view.Output.ScrollToCaret();
         }
-        view.LastSeen = DateTime.Now;
-        view.LastState = snapshot.State;
-        view.Title.Text = snapshot.MachineName + "  ·  " + StateText(snapshot.State);
+        if (addedMachine) RebuildGrid();
+
+        if (batch.Logs.Count == 0) return;
+        logLines.AddRange(batch.Logs);
+        if (logLines.Count > 1000)
+        {
+            logLines.RemoveRange(0, logLines.Count - 800);
+            logBox.Lines = logLines.ToArray();
+        }
+        else
+        {
+            StringBuilder text = new StringBuilder();
+            foreach (string line in batch.Logs) text.Append(line).Append(Environment.NewLine);
+            logBox.AppendText(text.ToString());
+        }
+    }
+
+    private static string SnapshotLine(BtfSnapshot snapshot)
+    {
         string line = snapshot.DeviceTime + "  计数 " + snapshot.WorkCount + "，开机 " + FormatDuration(snapshot.BootSeconds)
             + "，加工 " + FormatDuration(snapshot.WorkSeconds) + "，完成数 " + snapshot.FinishedCount
             + "，进度 " + snapshot.ProgressPercent.ToString("0.0", CultureInfo.InvariantCulture) + "%"
             + "，锣程 " + snapshot.RouteLength.ToString("0.###", CultureInfo.InvariantCulture);
         if (!string.IsNullOrWhiteSpace(snapshot.ProgramName)) line += "，程序 " + snapshot.ProgramName;
         if (!string.IsNullOrWhiteSpace(snapshot.ScreenText)) line += "，报警 " + snapshot.ScreenText;
-        view.Lines.Add(line);
-        if (view.Lines.Count > 200) view.Lines.RemoveAt(0);
-        view.Output.Lines = view.Lines.ToArray();
-        view.Output.SelectionStart = view.Output.TextLength;
-        view.Output.ScrollToCaret();
-        UpdateStatus();
+        return line;
     }
 
     private void RebuildGrid()
@@ -225,10 +276,15 @@ internal sealed class BtfMainForm : Form
     {
         if (settings == null) { status.Text = "服务未启动"; return; }
         int online = 0;
+        DateTime now = DateTime.UtcNow;
         foreach (MachineView view in machines.Values)
         {
-            if ((DateTime.Now - view.LastSeen).TotalSeconds < settings.IdleSeconds) online++;
-            else view.Title.Text = view.MachineName + "  ·  离线";
+            if ((now - view.LastSeenUtc).TotalSeconds < settings.IdleSeconds) online++;
+            else if (view.LastState != "OFFLINE")
+            {
+                view.LastState = "OFFLINE";
+                view.Title.Text = view.MachineName + "  ·  离线";
+            }
         }
         status.Text = (server == null ? "● 已停止" : paused ? "● 暂停接收" : "● 正在监听")
             + "  " + settings.ListenHost + ":" + settings.ListenPort
@@ -251,22 +307,7 @@ internal sealed class BtfMainForm : Form
             }
             catch { }
         }
-        if (IsDisposed || !IsHandleCreated) return;
-        try
-        {
-            BeginInvoke((MethodInvoker)delegate
-            {
-                string[] lines = logBox.Lines;
-                if (lines.Length > 1000)
-                {
-                    var recent = new List<string>(lines);
-                    recent.RemoveRange(0, recent.Count - 800);
-                    logBox.Lines = recent.ToArray();
-                }
-                logBox.AppendText(line + Environment.NewLine);
-            });
-        }
-        catch (InvalidOperationException) { }
+        if (!IsDisposed && !Disposing) displayBuffer.AddLog(line);
     }
 
     private static string StateText(string state)
@@ -289,7 +330,7 @@ internal sealed class BtfMainForm : Form
         internal readonly GroupBox Title = new GroupBox();
         internal readonly TextBox Output = new TextBox();
         internal readonly List<string> Lines = new List<string>();
-        internal DateTime LastSeen = DateTime.MinValue;
+        internal DateTime LastSeenUtc = DateTime.MinValue;
         internal string LastState = "OFFLINE";
         internal MachineView(string name)
         {
