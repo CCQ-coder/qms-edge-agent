@@ -18,6 +18,8 @@ internal static class BtfTests
         Run("SplitAndCombinedFrames", SplitAndCombinedFrames);
         Run("UndelimitedCommandsAndRecord", UndelimitedCommandsAndRecord);
         Run("SnapshotFields", SnapshotFields);
+        Run("DisplayBufferBoundsAndPreservesOrder", DisplayBufferBoundsAndPreservesOrder);
+        Run("DisplayBufferClearAndDrain", DisplayBufferClearAndDrain);
         Run("QueueSurvivesRestart", QueueSurvivesRestart);
         Run("QueueRecoversPartialTail", QueueRecoversPartialTail);
         Run("QmsReportInterval", QmsReportInterval);
@@ -60,6 +62,58 @@ internal static class BtfTests
     {
         string text = "2026-10-19(1)10:11: 4,25309.2,11658.3,20382,100.0,0,86649.3";
         return text.PadRight(80, ' ');
+    }
+
+    private static void DisplayBufferBoundsAndPreservesOrder()
+    {
+        BtfDisplayBuffer buffer = new BtfDisplayBuffer();
+        DateTime received = new DateTime(2026, 10, 26, 12, 0, 0, DateTimeKind.Utc);
+        for (int machine = 0; machine < 25; machine++)
+            for (int sequence = 0; sequence < 205; sequence++)
+                buffer.AddSnapshot(new BtfSnapshot { MachineName = "CNC-" + machine, WorkCount = sequence },
+                    received.AddSeconds(sequence));
+        for (int sequence = 0; sequence < 1005; sequence++) buffer.AddLog("log-" + sequence);
+
+        BtfDisplayBatch batch = buffer.Drain();
+        Equal(25, batch.Machines.Count);
+        for (int machine = 0; machine < 25; machine++)
+        {
+            List<BtfDisplaySnapshot> snapshots = batch.Machines["CNC-" + machine];
+            Equal(200, snapshots.Count);
+            Equal(5, snapshots[0].Snapshot.WorkCount);
+            Equal(received.AddSeconds(5), snapshots[0].ReceivedUtc);
+            Equal(204, snapshots[199].Snapshot.WorkCount);
+        }
+        Equal(1000, batch.Logs.Count);
+        Equal("log-5", batch.Logs[0]);
+        Equal("log-1004", batch.Logs[999]);
+
+        buffer.AddSnapshot(new BtfSnapshot { MachineName = "CNC-0", WorkCount = 1 }, received);
+        buffer.AddSnapshot(new BtfSnapshot { MachineName = "cnc-0", WorkCount = 2 }, received);
+        batch = buffer.Drain();
+        Equal(1, batch.Machines.Count);
+        Equal(2, batch.Machines["CNC-0"].Count);
+        Equal(1, batch.Machines["CNC-0"][0].Snapshot.WorkCount);
+        Equal(2, batch.Machines["CNC-0"][1].Snapshot.WorkCount);
+    }
+
+    private static void DisplayBufferClearAndDrain()
+    {
+        BtfDisplayBuffer buffer = new BtfDisplayBuffer();
+        buffer.AddSnapshot(new BtfSnapshot { MachineName = "CNC-1", WorkCount = 1 }, DateTime.UtcNow);
+        buffer.AddLog("old");
+        buffer.Clear();
+        Equal(0, buffer.Drain().Machines.Count);
+        Equal(0, buffer.Drain().Logs.Count);
+
+        buffer.AddSnapshot(new BtfSnapshot { MachineName = "CNC-1", WorkCount = 2 }, DateTime.UtcNow);
+        buffer.AddLog("new");
+        BtfDisplayBatch batch = buffer.Drain();
+        Equal(1, batch.Machines.Count);
+        Equal(2, batch.Machines["CNC-1"][0].Snapshot.WorkCount);
+        Equal("new", batch.Logs[0]);
+        Equal(0, buffer.Drain().Machines.Count);
+        Equal(0, buffer.Drain().Logs.Count);
     }
 
     private static void SplitAndCombinedFrames()
