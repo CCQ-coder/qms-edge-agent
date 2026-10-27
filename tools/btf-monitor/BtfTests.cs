@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.IO.Compression;
 using System.Net;
 using System.Net.Sockets;
 using System.Text;
@@ -18,6 +19,7 @@ internal static class BtfTests
         Run("SplitAndCombinedFrames", SplitAndCombinedFrames);
         Run("UndelimitedCommandsAndRecord", UndelimitedCommandsAndRecord);
         Run("SnapshotFields", SnapshotFields);
+        Run("ClosedRecordsAreCompressedWithoutChangingToday", ClosedRecordsAreCompressedWithoutChangingToday);
         Run("QueueSurvivesRestart", QueueSurvivesRestart);
         Run("QueueRecoversPartialTail", QueueRecoversPartialTail);
         Run("QmsReportInterval", QmsReportInterval);
@@ -107,6 +109,65 @@ internal static class BtfTests
         Equal(20382, snapshot.FinishedCount);
         Equal("IDLE", snapshot.State);
         Equal("2026-10-19 10:11:00", snapshot.DeviceTime);
+    }
+
+    private static void ClosedRecordsAreCompressedWithoutChangingToday()
+    {
+        string baseDirectory = Path.Combine(Directory.GetCurrentDirectory(), "outputs", "btf-record-test-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(baseDirectory);
+        try
+        {
+            BtfRecordLog log = new BtfRecordLog(baseDirectory, 30, delegate(string value) { throw new Exception(value); });
+            string oldDirectory = Path.Combine(baseDirectory, "records", DateTime.Today.AddDays(-1).ToString("yyyy-MM-dd"));
+            Directory.CreateDirectory(oldDirectory);
+            string source = Path.Combine(oldDirectory, "CNC-14.jsonl");
+            string original = "{\"one\":1}\n{\"two\":2}\n";
+            string previous = "{\"before\":0}\n";
+            File.WriteAllText(source, original, new UTF8Encoding(false));
+            using (FileStream file = File.Create(source + ".gz"))
+            using (GZipStream gzip = new GZipStream(file, CompressionMode.Compress))
+            using (StreamWriter writer = new StreamWriter(gzip, new UTF8Encoding(false))) writer.Write(previous);
+            log.CompressClosedDays(DateTime.Today);
+            Equal(false, File.Exists(source));
+            using (FileStream file = File.OpenRead(source + ".gz"))
+            using (GZipStream gzip = new GZipStream(file, CompressionMode.Decompress))
+            using (StreamReader reader = new StreamReader(gzip, Encoding.UTF8))
+                Equal(previous, reader.ReadToEnd());
+            using (FileStream file = File.OpenRead(source + ".1.gz"))
+            using (GZipStream gzip = new GZipStream(file, CompressionMode.Decompress))
+            using (StreamReader reader = new StreamReader(gzip, Encoding.UTF8))
+                Equal(original, reader.ReadToEnd());
+
+            string blocked = Path.Combine(oldDirectory, "CNC-15.jsonl");
+            File.WriteAllText(blocked, original, new UTF8Encoding(false));
+            Directory.CreateDirectory(blocked + ".gz.tmp");
+            List<string> errors = new List<string>();
+            new BtfRecordLog(baseDirectory, 30, errors.Add).CompressClosedDays(DateTime.Today);
+            Equal(true, File.Exists(blocked));
+            Equal(1, errors.Count);
+            Directory.Delete(blocked + ".gz.tmp");
+            File.Delete(blocked);
+
+            string protectedSource = Path.Combine(oldDirectory, "CNC-16.jsonl");
+            File.WriteAllText(protectedSource, original, new UTF8Encoding(false));
+            File.SetAttributes(protectedSource, FileAttributes.ReadOnly);
+            try
+            {
+                new BtfRecordLog(baseDirectory, 30, errors.Add).CompressClosedDays(DateTime.Today);
+                Equal(true, File.Exists(protectedSource));
+                Equal(0, Directory.GetFiles(oldDirectory, "CNC-16.jsonl*.gz").Length);
+                Equal(2, errors.Count);
+            }
+            finally { File.SetAttributes(protectedSource, FileAttributes.Normal); }
+            File.Delete(protectedSource);
+
+            log.Append(SnapshotFor("CNC-14"));
+            log.CompressClosedDays(DateTime.Today);
+            string today = Path.Combine(baseDirectory, "records", DateTime.Today.ToString("yyyy-MM-dd"), "CNC-14.jsonl");
+            Equal(true, File.Exists(today));
+            Equal(false, File.Exists(today + ".gz"));
+        }
+        finally { Directory.Delete(baseDirectory, true); }
     }
 
     private static void QueueSurvivesRestart()
