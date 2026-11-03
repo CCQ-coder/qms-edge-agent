@@ -1,0 +1,10 @@
+{
+  "listen": "127.0.0.1:7666",
+  "allowed_cidrs": ["127.0.0.1/8"],
+  "queue_dir": "./queue",
+  "capture_only": true,
+  "forward_mes": false,
+  "capture_token": "",
+  "mes_listen": "",
+  "mes_max_files": 10000
+}

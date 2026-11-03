@@ -1,0 +1,23 @@
+[Unit]
+Description=Jin Dali six-axis router S1 bridge
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=jdlbridge
+Group=jdlbridge
+WorkingDirectory=/opt/jdl-s1-bridge
+Environment=TZ=Asia/Shanghai
+ExecStart=/opt/jdl-s1-bridge/jdl-s1-bridge -config /opt/jdl-s1-bridge/config.json
+Restart=always
+RestartSec=5
+UMask=0077
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/jdl-s1-bridge
+
+[Install]
+WantedBy=multi-user.target

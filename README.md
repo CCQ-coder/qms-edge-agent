@@ -15,6 +15,8 @@ QMS Edge Agent 是部署在设备网段中间电脑上的 Windows 监听程序�
 | 森泉 MES Mock | 模拟厂家 MES 服务端，按设备请求的 `method` 返回可编辑的示例应答，供联调和测试使用 | [`tools/hoson-mes-mock`](tools/hoson-mes-mock/README.md)；运行 `tools\hoson-mes-mock\build.cmd`，产物在 `outputs\hoson-mes-mock` | 测试电脑或隔离测试网段；默认监听 TCP 4523 的 `POST /api/mes/invoke` |
 | 科视光学 MES Mock / S1 转发器 | 在 `192.168.1.71:4524` 接收科视 HTTP/TLS 上报、记录原始报文，并可用独立持久队列通过 MQTT QoS 1 转发到 S1 | [`tools/kst-mes-mock`](tools/kst-mes-mock/README.md)；运行 `tools\kst-mes-mock\build.cmd`，产物在 `outputs\kst-mes-mock` | 测试或现场中间电脑；打开窗口后手动启动 |
 
+金大立六轴锣机独立云端接收器见 [使用说明](tools/jdl-s1-bridge/README.md)。文档中的八个上传接口可持久排队并通过 MQTT QoS 1 转发到 S1；两版软件的单 URL 接口与原始 TCP 数据先保存原文，不影响上述现场 Windows 网关。
+
 森泉 MES Mock 来自原 QMS 仓库的 `gateway/hoson-mes-mock`，使用厂家提供的 MES 服务端 DEMO 应答配置。它只模拟 MES 应答，不接收设备遥测，也不向 QMS 转发事件；现场正式接入使用上表的设备监听器。Mock 的启动、配置、日志和测试方法见其[独立说明](tools/hoson-mes-mock/README.md)。
 
 ## 快速构建

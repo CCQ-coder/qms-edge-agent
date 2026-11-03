@@ -1,0 +1,12 @@
+{
+  "listen": "127.0.0.1:7666",
+  "allowed_cidrs": ["127.0.0.1/8"],
+  "source_ids": ["REPLACE_WITH_REAL_ASSETSCODE", "REPLACE_WITH_REAL_EQPID_IF_DIFFERENT"],
+  "queue_dir": "./queue",
+  "broker": "127.0.0.1:1883",
+  "product_id": "REPLACE_WITH_S1_PRODUCT_ID",
+  "serial_number": "REPLACEWITHS1DEVICENUMBER",
+  "user_id": "REPLACE_WITH_S1_USER_ID",
+  "username": "REPLACE_WITH_S1_MQTT_USERNAME",
+  "password": "REPLACE_WITH_S1_MQTT_PASSWORD"
+}

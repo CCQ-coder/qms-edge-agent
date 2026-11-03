@@ -12,6 +12,8 @@ JingdeEapForwarder-startup-errors.log
 
 # Local configuration overrides
 config/*.local.ini
+tools/jdl-s1-bridge/config.json
+tools/jdl-s1-bridge/queue/
 
 # IDE metadata
 .vs/
