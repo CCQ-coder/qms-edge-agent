@@ -6,6 +6,8 @@
 
 每个文档接口的页码、地址及当前返回字段见 [金大立 EAP 接口对照](../../docs/jdl-eap-interface-mapping.md)。
 
+云端已部署入口、当前响应及日志位置见 [云端接口说明 PDF](../../output/pdf/jdl-cloud-interfaces-and-operations.pdf)。
+
 ## 首条报文采样
 
 将 `capture.example.json` 复制为 `config.json`，用 `openssl rand -hex 24` 生成至少 32 位的 `capture_token`，并设置私有的 `queue_dir`。原有 5173 HTTPS 入口只接收 `/jdlSave/MchnData?key=<capture_token>`，原文位于 `queue/captures/*.json`。8604 HTTP 入口接收下表九个文档接口；每个请求的路径、方法、查询参数、请求头、来源、时间、原始正文及预定应答状态先持久落盘。文档中的八个上传接口在保存成功后返回其成功应答，非法请求或磁盘不可写时返回错误。扫码取任务接口会记录请求，但在缺少真实生产任务来源时返回 HTTP 503，不能用虚构任务驱动设备生产。原文的 `body` 字段是 Base64 编码的原始字节。默认只记录；确认设备编号、来源和 S1 凭据后，可启用 `forward_mes` 转发八个上传接口。
