@@ -67,3 +67,14 @@ chmod 600 config.json
 - OpenResty 的 `/data/1panel/www/conf.d/qms-browser-https-internal.conf` 将 `https://gongying.duckdns.org:5173/jdlSave/MchnData` 精确代理到本机 `127.0.0.1:7666`；修改前副本为同目录的 `.jdl-backup-20261103` 文件。
 - S1 产品“金大立六轴锣机”（ID `34`）已发布，首台设备 `E1807091137`（设备 ID `5`）已创建，云端 MQTT 连接验证成功。该设备网络在 13:40 的人工测试请求来自 `113.195.85.167`；`forward_mes` 已允许该出口 `/32` 与设备编号同时匹配时转发八个文档上传接口。这个公网 IP 与先前另一版软件的测试 IP 相同，须继续用实际报文中的设备编号区分。扫码请求只记录并返回 503；两条软件 URL 路径和原始 TCP 仍只记录，待真实报文确定格式后再映射。凭据只在云端私有配置中，不提交到仓库。
 - 按用户要求，8604 持续对所有 IP 开放：UFW 允许 IPv4/IPv6，程序无截止时间，且无待执行的关闭 timer。公网九个文档接口、两条软件 URL 路径、未知 HTTP 路径与原始 TCP 人工测试均通过；非可信来源或设备编号的文档上报会记录后返回 403，不进入 S1 队列。公共采样位于 `/var/lib/jdl-s1-bridge/mes-captures`，上限 10000 条且不自动删除；可信设备上报另在待发队列及 `sent/` 中保存完整原文。截至 2026-11-03 13:56（北京时间），尚无真实设备报文。
+
+## 检查请求日志
+
+8604 和私有 HTTPS 代理入口的每条已解析 HTTP 请求都会向 systemd journal 写一行 `JDL request`，包含入口、来源、方法、路径、实际读取的正文字节数和响应状态；8604 成功归档的原始 TCP 数据也写一行。查看最近半小时或实时日志：
+
+```sh
+journalctl -u jdl-s1-bridge --since '30 minutes ago' -o short-iso | grep 'JDL request'
+journalctl -u jdl-s1-bridge -f -o short-iso
+```
+
+`read_bytes` 是程序实际读取的字节数；若请求在读取正文前被拒绝，显示 0。查询参数、请求头及正文只保存在权限受限的 `/var/lib/jdl-s1-bridge/mes-captures/*.json` 或 `captures/*.json` 中，不写入 journal。连接限流或无法解析成 HTTP 的流量仍受现有采样限制。

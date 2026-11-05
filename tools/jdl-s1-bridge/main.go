@@ -180,9 +180,9 @@ func newBridge(c config) (*bridge, error) {
 
 func (b *bridge) handler() http.Handler {
 	if b.config.CaptureOnly {
-		return http.HandlerFunc(b.handleCapture)
+		return logRequests("private", http.HandlerFunc(b.handleCapture))
 	}
-	return http.HandlerFunc(b.handle)
+	return logRequests("private", http.HandlerFunc(b.handle))
 }
 
 func (b *bridge) handleCapture(w http.ResponseWriter, r *http.Request) {

@@ -91,7 +91,7 @@ func (b *bridge) serveMESCapture(listener net.Listener, until time.Time) error {
 	}
 	m := &mesMonitor{bridge: b, until: until, clients: make(chan struct{}, maxMESConnections), activeByIP: make(map[string]int)}
 	m.httpIn = &mesHTTPListener{addr: listener.Addr(), conns: make(chan net.Conn, maxMESConnections), done: make(chan struct{})}
-	server := &http.Server{Handler: http.HandlerFunc(m.handleHTTP), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, WriteTimeout: 10 * time.Second, IdleTimeout: 5 * time.Second, MaxHeaderBytes: 8192}
+	server := &http.Server{Handler: logRequests("mes", http.HandlerFunc(m.handleHTTP)), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, WriteTimeout: 10 * time.Second, IdleTimeout: 5 * time.Second, MaxHeaderBytes: 8192}
 	server.SetKeepAlivesEnabled(false)
 	httpError := make(chan error, 1)
 	go func() {
@@ -311,7 +311,9 @@ func (m *mesMonitor) captureTCP(conn *mesConn) {
 	record := captureRecord{Transport: "tcp", RemoteAddr: conn.RemoteAddr().String(), ReceivedAt: start.Format(time.RFC3339Nano), Body: body, ReadTimes: readTimes, Truncated: truncated}
 	if err := m.persistMES(record); err != nil {
 		m.logUncaptured(conn.RemoteAddr().String(), "TCP capture rejected: "+err.Error())
+		return
 	}
+	log.Printf("JDL request transport=\"tcp\" remote=%q read_bytes=%d archived=true truncated=%t", conn.RemoteAddr().String(), len(body), truncated)
 }
 
 func earlier(a, b time.Time) time.Time {
