@@ -33,6 +33,8 @@
 
 每个原始 JSON 字段作为一条 S1 事件项，原字段名、JSON 类型、批次、分段序号写在 `remark` JSON 中。长值按 64 字符分段，同批各项放在一条 MQTT 消息。S1 事件时间是 S1 服务端接收时间；设备原始时间戳会作为普通字段保留。`queue/*.json` 保存原始报文和待发 MQTT 数据，收到 PUBACK 后移入 `queue/sent/` 留作核对及人工重放；PUBACK 并不代表 S1 数据库已落库。归档会持续增长，运维需核对 S1 入库后定期清理并监控磁盘空间。
 
+`/Equip/UploadJdl` 和 `/IO/UploadProcessQualityParameters` 还会把原字段写入 S1 属性主题，供设备的“运行状态”页显示；其余路由仍只写事件。产品 34 的 30 个属性字段定义在 [s1-product-34-model.sql](s1-product-34-model.sql)，其中 `Satus` 遵循厂家原始拼写。SQL 可重复执行，应用后清除 S1 Redis DB 8 的 `TSL:34` 键以刷新物模型缓存；无需取消产品发布。新字段的当前值在对应路由下一次上报后出现。
+
 ## 构建与配置
 
 ```sh

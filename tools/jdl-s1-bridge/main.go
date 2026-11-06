@@ -59,17 +59,18 @@ type route struct {
 	name      string
 	deviceKey string
 	broken    bool
+	property  bool
 }
 
 var routes = map[string]route{
-	"/IO/UploadProcessQualityParameters": {"quality", "AssetsCode", false},
-	"/IO/UploadDeviceStatus":             {"status", "AssetsCode", false},
-	"/IO/UploadParameterAdjustments":     {"adjustment", "AssetsCode", false},
-	"/IO/UploadProductionCount":          {"production_count", "AssetsCode", false},
-	"/Equip/UploadJdl":                   {"utilization", "AssetsCode", false},
-	"/UploadAlarmBegin":                  {"alarm_begin", "AssetsCode", false},
-	"/UploadAlarmEnd":                    {"alarm_end", "AssetsCode", false},
-	"/uploadbrokenknife":                 {"broken_knife", "EqpId", true},
+	"/IO/UploadProcessQualityParameters": {"quality", "AssetsCode", false, true},
+	"/IO/UploadDeviceStatus":             {"status", "AssetsCode", false, false},
+	"/IO/UploadParameterAdjustments":     {"adjustment", "AssetsCode", false, false},
+	"/IO/UploadProductionCount":          {"production_count", "AssetsCode", false, false},
+	"/Equip/UploadJdl":                   {"utilization", "AssetsCode", false, true},
+	"/UploadAlarmBegin":                  {"alarm_begin", "AssetsCode", false, false},
+	"/UploadAlarmEnd":                    {"alarm_end", "AssetsCode", false, false},
+	"/uploadbrokenknife":                 {"broken_knife", "EqpId", true, false},
 }
 
 type bridge struct {
@@ -80,11 +81,12 @@ type bridge struct {
 }
 
 type queuedMessage struct {
-	SourceID string          `json:"source_id,omitempty"`
-	Topic    string          `json:"topic"`
-	Payload  json.RawMessage `json:"payload"`
-	Raw      json.RawMessage `json:"raw"`
-	Capture  *captureRecord  `json:"capture,omitempty"`
+	SourceID        string          `json:"source_id,omitempty"`
+	Topic           string          `json:"topic"`
+	Payload         json.RawMessage `json:"payload"`
+	PropertyPayload json.RawMessage `json:"property_payload,omitempty"`
+	Raw             json.RawMessage `json:"raw"`
+	Capture         *captureRecord  `json:"capture,omitempty"`
 }
 
 type captureRecord struct {
@@ -386,10 +388,15 @@ func (b *bridge) makeMessage(routeInfo route, payload map[string]interface{}, ra
 	}
 	sort.Strings(keys)
 	items := make([]eventItem, 0, len(keys))
+	properties := make([]eventItem, 0, len(keys))
+	timestamp := time.Now().Format("2006-01-02 15:04:05")
 	for _, key := range keys {
 		value, kind, err := eventValue(payload[key])
 		if err != nil {
 			return queuedMessage{}, err
+		}
+		if routeInfo.property {
+			properties = append(properties, eventItem{ID: key, Value: value, TS: timestamp})
 		}
 		runes := []rune(value)
 		total := (len(runes) + 63) / 64
@@ -409,14 +416,21 @@ func (b *bridge) makeMessage(routeInfo route, payload map[string]interface{}, ra
 			if utf8.RuneCount(meta) > 200 {
 				return queuedMessage{}, fmt.Errorf("field name %q exceeds S1 remark limit", key)
 			}
-			items = append(items, eventItem{ID: "jdl_" + routeInfo.name, Value: string(runes[start:end]), TS: time.Now().Format("2006-01-02 15:04:05"), Remark: string(meta)})
+			items = append(items, eventItem{ID: "jdl_" + routeInfo.name, Value: string(runes[start:end]), TS: timestamp, Remark: string(meta)})
 		}
 	}
 	encoded, err := json.Marshal(items)
 	if err != nil {
 		return queuedMessage{}, err
 	}
-	return queuedMessage{SourceID: sourceID, Topic: "/" + b.config.ProductID + "/" + identity.SerialNumber + "/event/post", Payload: encoded, Raw: append([]byte(nil), raw...)}, nil
+	var propertyPayload json.RawMessage
+	if routeInfo.property {
+		propertyPayload, err = json.Marshal(properties)
+		if err != nil {
+			return queuedMessage{}, err
+		}
+	}
+	return queuedMessage{SourceID: sourceID, Topic: "/" + b.config.ProductID + "/" + identity.SerialNumber + "/event/post", Payload: encoded, PropertyPayload: propertyPayload, Raw: append([]byte(nil), raw...)}, nil
 }
 
 func eventValue(v interface{}) (string, string, error) {
@@ -520,7 +534,7 @@ func (b *bridge) flushOnce() error {
 			recordError(fmt.Errorf("queue file %s: %w", path, err))
 			continue
 		}
-		if message.Topic == "" || !json.Valid(message.Payload) {
+		if message.Topic == "" || !json.Valid(message.Payload) || (len(message.PropertyPayload) > 0 && !json.Valid(message.PropertyPayload)) {
 			recordError(fmt.Errorf("queue file %s is invalid", path))
 			continue
 		}
@@ -544,6 +558,14 @@ func (b *bridge) flushOnce() error {
 		connection.UserID = identity.UserID
 		connection.Username = identity.Username
 		connection.Password = identity.Password
+		if len(message.PropertyPayload) > 0 {
+			propertyMessage := queuedMessage{Topic: "/" + b.config.ProductID + "/" + identity.SerialNumber + "/property/post", Payload: message.PropertyPayload}
+			if err := publishMQTT(connection, propertyMessage); err != nil {
+				recordError(fmt.Errorf("queue file %s property: %w", path, err))
+				failedSources[message.SourceID] = true
+				continue
+			}
+		}
 		if err := publishMQTT(connection, message); err != nil {
 			recordError(fmt.Errorf("queue file %s: %w", path, err))
 			failedSources[message.SourceID] = true

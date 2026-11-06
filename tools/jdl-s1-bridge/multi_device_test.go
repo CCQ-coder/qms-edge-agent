@@ -42,7 +42,7 @@ func postMultiDevice(t *testing.T, b *bridge, sourceID string, wantStatus int) {
 
 func TestMultiDeviceQueueAndRestartUseSeparateMQTTIdentities(t *testing.T) {
 	cfg := multiDeviceConfig(t)
-	address, reports := fakeBrokerN(t, []byte{0x40, 0x40})
+	address, reports := fakeBrokerN(t, []byte{0x40, 0x40, 0x40, 0x40})
 	cfg.Broker = address
 	b, err := newBridge(cfg)
 	if err != nil {
@@ -84,7 +84,7 @@ func TestMultiDeviceQueueAndRestartUseSeparateMQTTIdentities(t *testing.T) {
 		t.Fatal("restarted bridge did not archive both reports")
 	}
 	seen := make(map[string]bool)
-	for i := 0; i < 2; i++ {
+	for i := 0; i < 4; i++ {
 		select {
 		case got := <-reports:
 			if got.err != nil {
@@ -95,19 +95,26 @@ func TestMultiDeviceQueueAndRestartUseSeparateMQTTIdentities(t *testing.T) {
 				"JDLR0006": {"S&JDLR0006&34&11", "user-6", "password-6"},
 				"JDLR0007": {"S&JDLR0007&34&12", "user-7", "password-7"},
 			}[id]
-			if seen[id] || got.clientID != want.clientID || got.username != want.username || got.password != want.password {
+			if seen[got.topic] || got.clientID != want.clientID || got.username != want.username || got.password != want.password {
 				t.Fatalf("wrong MQTT identity for %s: %+v", id, got)
 			}
-			seen[id] = true
+			seen[got.topic] = true
 		case <-time.After(3 * time.Second):
 			t.Fatal("broker did not receive both reports")
+		}
+	}
+	for _, id := range []string{"JDLR0006", "JDLR0007"} {
+		for _, kind := range []string{"property", "event"} {
+			if !seen["/34/"+id+"/"+kind+"/post"] {
+				t.Fatalf("missing %s report for %s", kind, id)
+			}
 		}
 	}
 }
 
 func TestMultiDevicePublishFailureDoesNotBlockOtherDevice(t *testing.T) {
 	cfg := multiDeviceConfig(t)
-	address, reports := fakeBrokerN(t, []byte{0, 0x40})
+	address, reports := fakeBrokerN(t, []byte{0, 0x40, 0x40})
 	cfg.Broker = address
 	b, err := newBridge(cfg)
 	if err != nil {
@@ -122,17 +129,61 @@ func TestMultiDevicePublishFailureDoesNotBlockOtherDevice(t *testing.T) {
 	if len(queued(t, cfg.QueueDir)) != 2 || len(queued(t, filepath.Join(cfg.QueueDir, "sent"))) != 1 {
 		t.Fatal("one failed device blocked the other")
 	}
-	for i, device := range []string{"JDLR0006", "JDLR0007"} {
+	for i, topic := range []string{"/34/JDLR0006/property/post", "/34/JDLR0007/property/post", "/34/JDLR0007/event/post"} {
 		select {
 		case got := <-reports:
 			if got.err != nil {
 				t.Fatal(got.err)
 			}
-			if got.topic != "/34/"+device+"/event/post" {
+			if got.topic != topic {
 				t.Fatalf("broker report %d topic = %s", i, got.topic)
 			}
 		case <-time.After(3 * time.Second):
 			t.Fatal("broker did not receive the second device")
+		}
+	}
+}
+
+func TestPropertyAndEventAckRequiredBeforeArchive(t *testing.T) {
+	cfg := multiDeviceConfig(t)
+	address, reports := fakeBrokerN(t, []byte{0x40, 0, 0x40, 0x40})
+	cfg.Broker = address
+	b, err := newBridge(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	postMultiDevice(t, b, "JDLR0006", 200)
+	stored := queued(t, cfg.QueueDir)
+	if len(stored) != 1 || len(stored[0].PropertyPayload) == 0 {
+		t.Fatalf("property payload missing from durable queue: %+v", stored)
+	}
+	var properties []eventItem
+	if err := json.Unmarshal(stored[0].PropertyPayload, &properties); err != nil {
+		t.Fatal(err)
+	}
+	if len(properties) != 2 || properties[0].ID != "AssetsCode" || properties[0].Value != "JDLR0006" || properties[1].ID != "Jdl" || properties[1].Value != "7" {
+		t.Fatalf("raw fields were not preserved as properties: %+v", properties)
+	}
+	if err := b.flushOnce(); err == nil {
+		t.Fatal("missing event PUBACK was accepted")
+	}
+	if len(queued(t, cfg.QueueDir)) != 1 || len(queued(t, filepath.Join(cfg.QueueDir, "sent"))) != 0 {
+		t.Fatal("report archived before both topics were acknowledged")
+	}
+	if err := b.flushOnce(); err != nil {
+		t.Fatal(err)
+	}
+	if len(queued(t, cfg.QueueDir)) != 0 || len(queued(t, filepath.Join(cfg.QueueDir, "sent"))) != 1 {
+		t.Fatal("fully acknowledged report stayed in queue")
+	}
+	for i, topic := range []string{"/34/JDLR0006/property/post", "/34/JDLR0006/event/post", "/34/JDLR0006/property/post", "/34/JDLR0006/event/post"} {
+		select {
+		case got := <-reports:
+			if got.err != nil || got.topic != topic {
+				t.Fatalf("publish %d = %+v, want %s", i, got, topic)
+			}
+		case <-time.After(3 * time.Second):
+			t.Fatalf("missing publish %d", i)
 		}
 	}
 }
@@ -222,6 +273,7 @@ func TestLegacyQueueWithoutSourceIDStillReplays(t *testing.T) {
 		t.Fatal(err)
 	}
 	delete(stored, "source_id")
+	delete(stored, "property_payload")
 	data, _ = json.Marshal(stored)
 	if err := os.WriteFile(files[0], data, 0600); err != nil {
 		t.Fatal(err)

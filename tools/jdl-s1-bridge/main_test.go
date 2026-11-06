@@ -104,6 +104,38 @@ func TestUploadPersistsFieldsBeforeSuccess(t *testing.T) {
 	}
 }
 
+func TestPropertyRoutesKeepEventAndAlarmRoutesDoNotAddProperties(t *testing.T) {
+	for _, tc := range []struct {
+		path         string
+		body         string
+		wantProperty bool
+	}{
+		{"/IO/UploadProcessQualityParameters", `{"AssetsCode":"E1030ROUT017","SpRmp":10}`, true},
+		{"/IO/UploadDeviceStatus", `{"AssetsCode":"E1030ROUT017","S_Power":1}`, false},
+		{"/IO/UploadParameterAdjustments", `{"AssetsCode":"E1030ROUT017","M_SpRmp":10}`, false},
+		{"/IO/UploadProductionCount", `{"AssetsCode":"E1030ROUT017","C_ChgBoardCount":2}`, false},
+		{"/Equip/UploadJdl", `{"AssetsCode":"E1030ROUT017","Jdl":99.5}`, true},
+		{"/UploadAlarmBegin", `{"AssetsCode":"E1030ROUT017","AlarmCode":"2"}`, false},
+		{"/UploadAlarmEnd", `{"AssetsCode":"E1030ROUT017","RstAlarmCode":"2"}`, false},
+		{"/uploadbrokenknife", `{"EqpId":"eq01","TransactionId":"123","Msg":"broken"}`, false},
+	} {
+		t.Run(tc.path, func(t *testing.T) {
+			cfg := testConfig(t)
+			b, err := newBridge(cfg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if w := post(t, b, basePath+tc.path, tc.body); w.Code != http.StatusOK {
+				t.Fatalf("response = %d: %s", w.Code, w.Body.String())
+			}
+			messages := queued(t, cfg.QueueDir)
+			if len(messages) != 1 || len(messages[0].PropertyPayload) > 0 != tc.wantProperty || messages[0].Topic != "/88/JDL001/event/post" {
+				t.Fatalf("queued route %s = %+v", tc.path, messages)
+			}
+		})
+	}
+}
+
 func TestBrokenKnifeUsesItsOwnReplyAndDeviceID(t *testing.T) {
 	cfg := testConfig(t)
 	b, err := newBridge(cfg)
@@ -455,13 +487,13 @@ func TestMQTTPubAckFastBeeCompatibility(t *testing.T) {
 
 func TestMQTTPubAckRemovesQueuedReport(t *testing.T) {
 	cfg := testConfig(t)
-	address, result := fakeBroker(t, 0x40)
+	address, result := fakeBrokerN(t, []byte{0x40, 0x40})
 	cfg.Broker = address
 	b, err := newBridge(cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
-	w := post(t, b, "/dataService/webapi/IO/UploadDeviceStatus", `{"AssetsCode":"E1030ROUT017","S_POWER":1}`)
+	w := post(t, b, "/dataService/webapi/Equip/UploadJdl", `{"AssetsCode":"E1030ROUT017","Jdl":1}`)
 	if w.Code != http.StatusOK {
 		t.Fatalf("response: %d %s", w.Code, w.Body.String())
 	}
@@ -476,36 +508,40 @@ func TestMQTTPubAckRemovesQueuedReport(t *testing.T) {
 		t.Fatal("PUBACKed report stayed in queue")
 	}
 	archived := queued(t, filepath.Join(cfg.QueueDir, "sent"))
-	if len(archived) != 1 || !strings.Contains(string(archived[0].Raw), `"S_POWER":1`) {
+	if len(archived) != 1 || !strings.Contains(string(archived[0].Raw), `"Jdl":1`) {
 		t.Fatalf("acknowledged raw report not archived: %+v", archived)
 	}
-	select {
-	case got := <-result:
-		if got.err != nil {
-			t.Fatal(got.err)
-		}
-		if got.clientID != "S&JDL001&88&9" || got.username != "device-user" || got.password != "device-password" {
-			t.Fatalf("MQTT credentials: %+v", got)
-		}
-		var items []eventItem
-		if err := json.Unmarshal([]byte(got.payload), &items); err != nil {
-			t.Fatal(err)
-		}
-		found := false
-		for _, item := range items {
-			var meta eventRemark
-			if err := json.Unmarshal([]byte(item.Remark), &meta); err != nil {
+	for _, topic := range []string{"/88/JDL001/property/post", "/88/JDL001/event/post"} {
+		select {
+		case got := <-result:
+			if got.err != nil {
+				t.Fatal(got.err)
+			}
+			if got.clientID != "S&JDL001&88&9" || got.username != "device-user" || got.password != "device-password" {
+				t.Fatalf("MQTT credentials: %+v", got)
+			}
+			var items []eventItem
+			if err := json.Unmarshal([]byte(got.payload), &items); err != nil {
 				t.Fatal(err)
 			}
-			if meta.Field == "S_POWER" && item.Value == "1" {
-				found = true
+			found := false
+			for _, item := range items {
+				if topic == "/88/JDL001/property/post" {
+					found = found || item.ID == "Jdl" && item.Value == "1"
+				} else {
+					var meta eventRemark
+					if err := json.Unmarshal([]byte(item.Remark), &meta); err != nil {
+						t.Fatal(err)
+					}
+					found = found || meta.Field == "Jdl" && item.Value == "1"
+				}
 			}
+			if got.topic != topic || !found {
+				t.Fatalf("MQTT message: %+v", got)
+			}
+		case <-time.After(3 * time.Second):
+			t.Fatal("broker did not receive publish")
 		}
-		if got.topic != "/88/JDL001/event/post" || !found {
-			t.Fatalf("MQTT message: %+v", got)
-		}
-	case <-time.After(3 * time.Second):
-		t.Fatal("broker did not receive publish")
 	}
 }
 
