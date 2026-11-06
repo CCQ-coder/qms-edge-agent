@@ -47,11 +47,21 @@ chmod 600 config.json
 
 - `listen`：主监听器只接受数字形式的本机回环地址，例如 `127.0.0.1:7666`；通过 HTTPS 反向代理或私有隧道供设备访问。文档中的 `7666` 仅是厂家示例，不保证云端空闲。单独的 `mes_listen` 已按用户要求在公网 8604 开放，作为有界原文采样和已验证设备的文档接口入口。
 - `allowed_cidrs`：本程序看到的可信来源 IP，例如本机反向代理为 `127.0.0.1/8`；启用 `forward_mes` 时加入已验证设备出口的 `/32`，只允许这些来源转发到 S1。公网 8604 仍记录其他来源。空值和全网段会被拒绝；本程序不信任 `X-Forwarded-For`。
-- `source_ids`：**同一台实体设备**在常规上报中使用的真实 `AssetsCode`，以及断刀报文中的 `EqpId`（如果不同）。未列出的编号返回 403。多台实体设备须分别创建 S1 设备及接收器实例。
+- `source_ids`：旧版单设备配置中允许的真实 `AssetsCode`，以及断刀报文中的 `EqpId`（如果不同）。未列出的编号返回 403。
+- `mqtt_devices`：多台设备共用 8604 时，按报文中的 `AssetsCode`（断刀用 `EqpId`）分别填写各自在 S1 创建后取得的 `serial_number`、`user_id`、`username`、`password`；键必须等于 `serial_number`。此模式不能同时填写旧版 `source_ids`、顶层 MQTT 身份字段。队列只保存来源编号，不保存凭据；切换前须确认旧待发队列为空。
 - `queue_dir`：只有服务账号可读写的持久目录；请监控磁盘空间，勿放在临时目录。
 - `mes_max_files`：8604 公共采样目录的文件上限，默认 10000、最大 100000；达到上限时拒收普通采样报文，但已验证设备的文档上传可在持久 MQTT 队列保存完整原文后继续处理。旧记录不自动删除。每条正文上限 64 KiB，加上 Base64 与请求头开销，默认公共采样上限约占 1 GiB。
 - `forward_mes`：仅与 `capture_only=true`、`mes_listen` 同用；启用后需填写 `source_ids` 和 S1 MQTT 字段。只有设备编号及真实来源 IP 均匹配的八个文档上传接口入队；其他请求照常记录。队列及 `sent/` 归档无自动清理，请监控磁盘。
 - `broker` 及其余 MQTT 字段：从已发布的 S1 产品、设备连接信息中取得。MQTT 凭据通过明文 MQTT 3.1.1 传输，`broker` 只允许本机回环地址；若 S1 在别的主机，先建立受保护的 SSH/VPN 隧道。产品 ID、用户 ID 必须是数字，S1 设备编号仅用字母数字。
+
+多设备配置示例（凭据从各自 S1 设备连接信息取得，不要提交实际配置）：
+
+```json
+"mqtt_devices": {
+  "JDLR0006": {"serial_number":"JDLR0006","user_id":"<S1 用户 ID>","username":"<设备 0006 用户名>","password":"<设备 0006 密码>"},
+  "JDLR0007": {"serial_number":"JDLR0007","user_id":"<S1 用户 ID>","username":"<设备 0007 用户名>","password":"<设备 0007 密码>"}
+}
+```
 
 纯采样模式只需 `listen`、`allowed_cidrs`、`queue_dir`、`capture_only` 和 `capture_token`；启用 `forward_mes` 时还需真实设备编号、来源网段和 S1 连接参数。
 

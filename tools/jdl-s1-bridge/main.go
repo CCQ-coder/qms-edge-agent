@@ -29,22 +29,30 @@ const basePath = "/dataService/webapi"
 const maxRequestBytes = 64 << 10
 
 type config struct {
-	Listen          string    `json:"listen"`
-	AllowedCIDRs    []string  `json:"allowed_cidrs"`
-	SourceIDs       []string  `json:"source_ids"`
-	QueueDir        string    `json:"queue_dir"`
-	CaptureOnly     bool      `json:"capture_only"`
-	ForwardMES      bool      `json:"forward_mes"`
-	CaptureToken    string    `json:"capture_token"`
-	MESListen       string    `json:"mes_listen"`
-	MESCaptureUntil time.Time `json:"mes_capture_until"`
-	MESMaxFiles     int       `json:"mes_max_files"`
-	Broker          string    `json:"broker"`
-	ProductID       string    `json:"product_id"`
-	SerialNumber    string    `json:"serial_number"`
-	UserID          string    `json:"user_id"`
-	Username        string    `json:"username"`
-	Password        string    `json:"password"`
+	Listen          string                `json:"listen"`
+	AllowedCIDRs    []string              `json:"allowed_cidrs"`
+	SourceIDs       []string              `json:"source_ids"`
+	QueueDir        string                `json:"queue_dir"`
+	CaptureOnly     bool                  `json:"capture_only"`
+	ForwardMES      bool                  `json:"forward_mes"`
+	CaptureToken    string                `json:"capture_token"`
+	MESListen       string                `json:"mes_listen"`
+	MESCaptureUntil time.Time             `json:"mes_capture_until"`
+	MESMaxFiles     int                   `json:"mes_max_files"`
+	Broker          string                `json:"broker"`
+	ProductID       string                `json:"product_id"`
+	SerialNumber    string                `json:"serial_number"`
+	UserID          string                `json:"user_id"`
+	Username        string                `json:"username"`
+	Password        string                `json:"password"`
+	MQTTDevices     map[string]mqttDevice `json:"mqtt_devices"`
+}
+
+type mqttDevice struct {
+	SerialNumber string `json:"serial_number"`
+	UserID       string `json:"user_id"`
+	Username     string `json:"username"`
+	Password     string `json:"password"`
 }
 
 type route struct {
@@ -67,15 +75,16 @@ var routes = map[string]route{
 type bridge struct {
 	config  config
 	allowed []*net.IPNet
-	devices map[string]bool
+	devices map[string]mqttDevice
 	wake    chan struct{}
 }
 
 type queuedMessage struct {
-	Topic   string          `json:"topic"`
-	Payload json.RawMessage `json:"payload"`
-	Raw     json.RawMessage `json:"raw"`
-	Capture *captureRecord  `json:"capture,omitempty"`
+	SourceID string          `json:"source_id,omitempty"`
+	Topic    string          `json:"topic"`
+	Payload  json.RawMessage `json:"payload"`
+	Raw      json.RawMessage `json:"raw"`
+	Capture  *captureRecord  `json:"capture,omitempty"`
 }
 
 type captureRecord struct {
@@ -133,8 +142,23 @@ func newBridge(c config) (*bridge, error) {
 		if brokerIP := net.ParseIP(brokerHost); brokerIP == nil || !brokerIP.IsLoopback() {
 			return nil, errors.New("plaintext MQTT must use a numeric loopback broker address")
 		}
-		if c.Username == "" || c.Password == "" || !regexp.MustCompile(`^[0-9]+$`).MatchString(c.ProductID) || !regexp.MustCompile(`^[0-9]+$`).MatchString(c.UserID) || !regexp.MustCompile(`^[A-Za-z0-9]{1,32}$`).MatchString(c.SerialNumber) || len(c.SourceIDs) == 0 {
-			return nil, errors.New("source_ids and S1 MQTT product, device and credentials are required")
+		if !regexp.MustCompile(`^[0-9]+$`).MatchString(c.ProductID) {
+			return nil, errors.New("S1 MQTT product ID is required")
+		}
+		if len(c.MQTTDevices) == 0 {
+			if len(c.SourceIDs) == 0 || !validMQTTDevice(legacyMQTTDevice(c)) {
+				return nil, errors.New("source_ids and S1 MQTT product, device and credentials are required")
+			}
+		} else if len(c.SourceIDs) > 0 || c.SerialNumber != "" || c.UserID != "" || c.Username != "" || c.Password != "" {
+			return nil, errors.New("mqtt_devices cannot be combined with legacy source_ids or MQTT credentials")
+		}
+	}
+	for sourceID, identity := range c.MQTTDevices {
+		if sourceID == "" || !validMQTTDevice(identity) {
+			return nil, fmt.Errorf("mqtt_devices[%q] requires a valid S1 MQTT device and credentials", sourceID)
+		}
+		if sourceID != identity.SerialNumber {
+			return nil, fmt.Errorf("mqtt_devices[%q].serial_number must match its source ID", sourceID)
 		}
 	}
 	if c.MESListen != "" {
@@ -157,12 +181,19 @@ func newBridge(c config) (*bridge, error) {
 	if c.ForwardMES && (!c.CaptureOnly || c.MESListen == "") {
 		return nil, errors.New("forward_mes requires capture_only and mes_listen")
 	}
-	b := &bridge{config: c, devices: make(map[string]bool), wake: make(chan struct{}, 1)}
-	for _, id := range c.SourceIDs {
-		if id == "" {
-			return nil, errors.New("source_ids cannot contain an empty ID")
+	b := &bridge{config: c, devices: make(map[string]mqttDevice), wake: make(chan struct{}, 1)}
+	if len(c.MQTTDevices) > 0 {
+		for sourceID, identity := range c.MQTTDevices {
+			b.devices[sourceID] = identity
 		}
-		b.devices[id] = true
+	} else {
+		identity := legacyMQTTDevice(c)
+		for _, id := range c.SourceIDs {
+			if id == "" {
+				return nil, errors.New("source_ids cannot contain an empty ID")
+			}
+			b.devices[id] = identity
+		}
 	}
 	for _, cidr := range c.AllowedCIDRs {
 		_, network, err := net.ParseCIDR(cidr)
@@ -176,6 +207,14 @@ func newBridge(c config) (*bridge, error) {
 		b.allowed = append(b.allowed, network)
 	}
 	return b, nil
+}
+
+func legacyMQTTDevice(c config) mqttDevice {
+	return mqttDevice{SerialNumber: c.SerialNumber, UserID: c.UserID, Username: c.Username, Password: c.Password}
+}
+
+func validMQTTDevice(identity mqttDevice) bool {
+	return identity.Username != "" && identity.Password != "" && regexp.MustCompile(`^[0-9]+$`).MatchString(identity.UserID) && regexp.MustCompile(`^[A-Za-z0-9]{1,32}$`).MatchString(identity.SerialNumber)
 }
 
 func (b *bridge) handler() http.Handler {
@@ -272,7 +311,7 @@ func (b *bridge) handle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if r.URL.Path == basePath+"/Equip/MillingMachineAccessToTask" {
-		if !b.devices[stringValue(payload["AssetsCode"])] {
+		if _, known := b.devices[stringValue(payload["AssetsCode"])]; !known {
 			writeFailure(w, http.StatusForbidden, routeInfo, "unknown device", "")
 			return
 		}
@@ -280,7 +319,7 @@ func (b *bridge) handle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	deviceID := stringValue(payload[routeInfo.deviceKey])
-	if !b.devices[deviceID] {
+	if _, known := b.devices[deviceID]; !known {
 		writeFailure(w, http.StatusForbidden, routeInfo, "unknown device", stringValue(payload["TransactionId"]))
 		return
 	}
@@ -331,6 +370,11 @@ func (b *bridge) sourceAllowed(ip net.IP) bool {
 func stringValue(v interface{}) string { s, _ := v.(string); return s }
 
 func (b *bridge) makeMessage(routeInfo route, payload map[string]interface{}, raw []byte) (queuedMessage, error) {
+	sourceID := stringValue(payload[routeInfo.deviceKey])
+	identity, known := b.devices[sourceID]
+	if !known {
+		return queuedMessage{}, errors.New("unknown device")
+	}
 	batch := make([]byte, 8)
 	if _, err := rand.Read(batch); err != nil {
 		return queuedMessage{}, err
@@ -372,7 +416,7 @@ func (b *bridge) makeMessage(routeInfo route, payload map[string]interface{}, ra
 	if err != nil {
 		return queuedMessage{}, err
 	}
-	return queuedMessage{Topic: "/" + b.config.ProductID + "/" + b.config.SerialNumber + "/event/post", Payload: encoded, Raw: append([]byte(nil), raw...)}, nil
+	return queuedMessage{SourceID: sourceID, Topic: "/" + b.config.ProductID + "/" + identity.SerialNumber + "/event/post", Payload: encoded, Raw: append([]byte(nil), raw...)}, nil
 }
 
 func eventValue(v interface{}) (string, string, error) {
@@ -450,6 +494,17 @@ func (b *bridge) flushOnce() error {
 	if err != nil {
 		return err
 	}
+	sentDir := filepath.Join(b.config.QueueDir, "sent")
+	if err := os.MkdirAll(sentDir, 0700); err != nil {
+		return err
+	}
+	var firstErr error
+	failedSources := make(map[string]bool)
+	recordError := func(err error) {
+		if firstErr == nil {
+			firstErr = err
+		}
+	}
 	for _, file := range files {
 		if file.IsDir() || !strings.HasSuffix(file.Name(), ".json") {
 			continue
@@ -457,28 +512,49 @@ func (b *bridge) flushOnce() error {
 		path := filepath.Join(b.config.QueueDir, file.Name())
 		data, err := os.ReadFile(path)
 		if err != nil {
-			return err
+			recordError(err)
+			continue
 		}
 		var message queuedMessage
 		if err := json.Unmarshal(data, &message); err != nil {
-			return fmt.Errorf("queue file %s: %w", path, err)
+			recordError(fmt.Errorf("queue file %s: %w", path, err))
+			continue
 		}
 		if message.Topic == "" || !json.Valid(message.Payload) {
-			return fmt.Errorf("queue file %s is invalid", path)
+			recordError(fmt.Errorf("queue file %s is invalid", path))
+			continue
 		}
-		if err := publishMQTT(b.config, message); err != nil {
-			return err
+		identity, known := b.devices[message.SourceID]
+		if message.SourceID == "" && len(b.config.MQTTDevices) == 0 {
+			identity, known = legacyMQTTDevice(b.config), true
 		}
-		sentDir := filepath.Join(b.config.QueueDir, "sent")
-		if err := os.MkdirAll(sentDir, 0700); err != nil {
-			return err
+		if !known {
+			recordError(fmt.Errorf("queue file %s: source device %q is not configured", path, message.SourceID))
+			continue
+		}
+		if message.Topic != "/"+b.config.ProductID+"/"+identity.SerialNumber+"/event/post" {
+			recordError(fmt.Errorf("queue file %s: topic does not match source device %q", path, message.SourceID))
+			continue
+		}
+		if failedSources[message.SourceID] {
+			continue
+		}
+		connection := b.config
+		connection.SerialNumber = identity.SerialNumber
+		connection.UserID = identity.UserID
+		connection.Username = identity.Username
+		connection.Password = identity.Password
+		if err := publishMQTT(connection, message); err != nil {
+			recordError(fmt.Errorf("queue file %s: %w", path, err))
+			failedSources[message.SourceID] = true
+			continue
 		}
 		// shortcut: sent archives grow until an operator confirms S1 persistence and prunes them.
 		if err := os.Rename(path, filepath.Join(sentDir, file.Name())); err != nil {
 			return err
 		}
 	}
-	return nil
+	return firstErr
 }
 
 func (b *bridge) runWorker(ctx context.Context) {

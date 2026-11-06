@@ -70,7 +70,8 @@ func (b *bridge) handleDocumentCapture(w http.ResponseWriter, r *http.Request, p
 	forward := status == http.StatusOK && b.config.ForwardMES && !scan
 	if forward {
 		host, _, err := net.SplitHostPort(r.RemoteAddr)
-		if err != nil || !b.sourceAllowed(net.ParseIP(host)) || !b.devices[stringValue(payload[info.deviceKey])] {
+		_, knownDevice := b.devices[stringValue(payload[info.deviceKey])]
+		if err != nil || !b.sourceAllowed(net.ParseIP(host)) || !knownDevice {
 			status, message, forward = http.StatusForbidden, "untrusted device or source", false
 		} else if forwardMessage, err = b.makeMessage(info, payload, body); err != nil {
 			status, message, forward = http.StatusBadRequest, err.Error(), false

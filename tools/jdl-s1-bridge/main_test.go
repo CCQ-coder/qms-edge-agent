@@ -322,71 +322,80 @@ type brokerResult struct {
 }
 
 func fakeBroker(t *testing.T, acknowledge bool) (string, <-chan brokerResult) {
+	return fakeBrokerN(t, []bool{acknowledge})
+}
+
+func fakeBrokerN(t *testing.T, acknowledgements []bool) (string, <-chan brokerResult) {
 	t.Helper()
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
-	result := make(chan brokerResult, 1)
+	result := make(chan brokerResult, len(acknowledgements))
 	go func() {
 		defer listener.Close()
-		var got brokerResult
-		defer func() { result <- got }()
-		conn, err := listener.Accept()
-		if err != nil {
-			got.err = err
-			return
-		}
-		defer conn.Close()
-		conn.SetDeadline(time.Now().Add(3 * time.Second))
-		header, body, err := readTestPacket(conn)
-		if err != nil {
-			got.err = err
-			return
-		}
-		if header != 0x10 {
-			got.err = fmt.Errorf("CONNECT header = %x", header)
-			return
-		}
-		i := 0
-		protocol := readTestText(body, &i)
-		if protocol != "MQTT" || body[i] != 4 {
-			got.err = fmt.Errorf("protocol = %s version %d", protocol, body[i])
-			return
-		}
-		i++
-		flags := body[i]
-		i += 3
-		got.clientID = readTestText(body, &i)
-		if flags&0x80 != 0 {
-			got.username = readTestText(body, &i)
-		}
-		if flags&0x40 != 0 {
-			got.password = readTestText(body, &i)
-		}
-		if _, err = conn.Write([]byte{0x20, 0x02, 0x00, 0x00}); err != nil {
-			got.err = err
-			return
-		}
-		header, body, err = readTestPacket(conn)
-		if err != nil {
-			got.err = err
-			return
-		}
-		if header != 0x32 {
-			got.err = fmt.Errorf("PUBLISH header = %x, want QoS1", header)
-			return
-		}
-		i = 0
-		got.topic = readTestText(body, &i)
-		packetID := body[i : i+2]
-		i += 2
-		got.payload = string(body[i:])
-		if acknowledge {
-			_, got.err = conn.Write([]byte{0x40, 0x02, packetID[0], packetID[1]})
+		for _, acknowledge := range acknowledgements {
+			result <- acceptBrokerReport(listener, acknowledge)
 		}
 	}()
 	return listener.Addr().String(), result
+}
+
+func acceptBrokerReport(listener net.Listener, acknowledge bool) (got brokerResult) {
+	conn, err := listener.Accept()
+	if err != nil {
+		got.err = err
+		return got
+	}
+	defer conn.Close()
+	conn.SetDeadline(time.Now().Add(3 * time.Second))
+	header, body, err := readTestPacket(conn)
+	if err != nil {
+		got.err = err
+		return got
+	}
+	if header != 0x10 {
+		got.err = fmt.Errorf("CONNECT header = %x", header)
+		return got
+	}
+	i := 0
+	protocol := readTestText(body, &i)
+	if protocol != "MQTT" || body[i] != 4 {
+		got.err = fmt.Errorf("protocol = %s version %d", protocol, body[i])
+		return got
+	}
+	i++
+	flags := body[i]
+	i += 3
+	got.clientID = readTestText(body, &i)
+	if flags&0x80 != 0 {
+		got.username = readTestText(body, &i)
+	}
+	if flags&0x40 != 0 {
+		got.password = readTestText(body, &i)
+	}
+	if _, err = conn.Write([]byte{0x20, 0x02, 0x00, 0x00}); err != nil {
+		got.err = err
+		return got
+	}
+	header, body, err = readTestPacket(conn)
+	if err != nil {
+		got.err = err
+		return got
+	}
+	if header != 0x32 {
+		got.err = fmt.Errorf("PUBLISH header = %x, want QoS1", header)
+		return got
+	}
+	i = 0
+	got.topic = readTestText(body, &i)
+	packetID := body[i : i+2]
+	i += 2
+	got.payload = string(body[i:])
+	if acknowledge {
+		_, got.err = conn.Write([]byte{0x40, 0x02, packetID[0], packetID[1]})
+	}
+	return got
 }
 
 func readTestPacket(r io.Reader) (byte, []byte, error) {
