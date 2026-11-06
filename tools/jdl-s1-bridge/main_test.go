@@ -321,27 +321,27 @@ type brokerResult struct {
 	err      error
 }
 
-func fakeBroker(t *testing.T, acknowledge bool) (string, <-chan brokerResult) {
-	return fakeBrokerN(t, []bool{acknowledge})
+func fakeBroker(t *testing.T, ackHeader byte) (string, <-chan brokerResult) {
+	return fakeBrokerN(t, []byte{ackHeader})
 }
 
-func fakeBrokerN(t *testing.T, acknowledgements []bool) (string, <-chan brokerResult) {
+func fakeBrokerN(t *testing.T, ackHeaders []byte) (string, <-chan brokerResult) {
 	t.Helper()
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
-	result := make(chan brokerResult, len(acknowledgements))
+	result := make(chan brokerResult, len(ackHeaders))
 	go func() {
 		defer listener.Close()
-		for _, acknowledge := range acknowledgements {
-			result <- acceptBrokerReport(listener, acknowledge)
+		for _, ackHeader := range ackHeaders {
+			result <- acceptBrokerReport(listener, ackHeader)
 		}
 	}()
 	return listener.Addr().String(), result
 }
 
-func acceptBrokerReport(listener net.Listener, acknowledge bool) (got brokerResult) {
+func acceptBrokerReport(listener net.Listener, ackHeader byte) (got brokerResult) {
 	conn, err := listener.Accept()
 	if err != nil {
 		got.err = err
@@ -392,8 +392,8 @@ func acceptBrokerReport(listener net.Listener, acknowledge bool) (got brokerResu
 	packetID := body[i : i+2]
 	i += 2
 	got.payload = string(body[i:])
-	if acknowledge {
-		_, got.err = conn.Write([]byte{0x40, 0x02, packetID[0], packetID[1]})
+	if ackHeader != 0 {
+		_, got.err = conn.Write([]byte{ackHeader, 0x02, packetID[0], packetID[1]})
 	}
 	return got
 }
@@ -428,9 +428,34 @@ func readTestText(data []byte, index *int) string {
 	return value
 }
 
+func TestMQTTPubAckFastBeeCompatibility(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		ackHeader byte
+		wantError bool
+	}{
+		{"fastbee", 0x42, false},
+		{"invalid", 0x43, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := testConfig(t)
+			address, received := fakeBroker(t, tc.ackHeader)
+			cfg.Broker = address
+			message := queuedMessage{Topic: "/" + cfg.ProductID + "/" + cfg.SerialNumber + "/event/post", Payload: json.RawMessage(`[]`)}
+			err := publishMQTT(cfg, message)
+			if (err != nil) != tc.wantError {
+				t.Fatalf("publishMQTT error = %v, wantError = %t", err, tc.wantError)
+			}
+			if got := <-received; got.err != nil {
+				t.Fatal(got.err)
+			}
+		})
+	}
+}
+
 func TestMQTTPubAckRemovesQueuedReport(t *testing.T) {
 	cfg := testConfig(t)
-	address, result := fakeBroker(t, true)
+	address, result := fakeBroker(t, 0x40)
 	cfg.Broker = address
 	b, err := newBridge(cfg)
 	if err != nil {
@@ -486,7 +511,7 @@ func TestMQTTPubAckRemovesQueuedReport(t *testing.T) {
 
 func TestMissingPubAckRetainsQueuedReport(t *testing.T) {
 	cfg := testConfig(t)
-	address, _ := fakeBroker(t, false)
+	address, _ := fakeBroker(t, 0)
 	cfg.Broker = address
 	b, err := newBridge(cfg)
 	if err != nil {

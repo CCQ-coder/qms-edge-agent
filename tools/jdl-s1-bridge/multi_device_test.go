@@ -42,7 +42,7 @@ func postMultiDevice(t *testing.T, b *bridge, sourceID string, wantStatus int) {
 
 func TestMultiDeviceQueueAndRestartUseSeparateMQTTIdentities(t *testing.T) {
 	cfg := multiDeviceConfig(t)
-	address, reports := fakeBrokerN(t, []bool{true, true})
+	address, reports := fakeBrokerN(t, []byte{0x40, 0x40})
 	cfg.Broker = address
 	b, err := newBridge(cfg)
 	if err != nil {
@@ -107,7 +107,7 @@ func TestMultiDeviceQueueAndRestartUseSeparateMQTTIdentities(t *testing.T) {
 
 func TestMultiDevicePublishFailureDoesNotBlockOtherDevice(t *testing.T) {
 	cfg := multiDeviceConfig(t)
-	address, reports := fakeBrokerN(t, []bool{false, true})
+	address, reports := fakeBrokerN(t, []byte{0, 0x40})
 	cfg.Broker = address
 	b, err := newBridge(cfg)
 	if err != nil {
@@ -199,7 +199,7 @@ func TestMultiDeviceChecksArchiveBeforePublishing(t *testing.T) {
 
 func TestLegacyQueueWithoutSourceIDStillReplays(t *testing.T) {
 	cfg := testConfig(t)
-	address, reports := fakeBroker(t, true)
+	address, reports := fakeBroker(t, 0x40)
 	cfg.Broker = address
 	b, err := newBridge(cfg)
 	if err != nil {

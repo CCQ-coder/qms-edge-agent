@@ -43,7 +43,8 @@ func publishMQTT(c config, message queuedMessage) error {
 	if _, err := io.ReadFull(conn, ack[:]); err != nil {
 		return err
 	}
-	if !bytes.Equal(ack[:], []byte{0x40, 0x02, 0x00, 0x01}) {
+	// FastBee sets QoS1's reserved bit on PUBACK; accept only its exact variant.
+	if !bytes.Equal(ack[:], []byte{0x40, 0x02, 0x00, 0x01}) && !bytes.Equal(ack[:], []byte{0x42, 0x02, 0x00, 0x01}) {
 		return fmt.Errorf("S1 MQTT PUBACK mismatch: %x", ack)
 	}
 	_ = writeMQTTPacket(conn, 0xE0, nil)
