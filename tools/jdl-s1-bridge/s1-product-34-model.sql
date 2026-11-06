@@ -16,11 +16,14 @@ SELECT f.model_name, p.product_id, p.product_name, p.tenant_id, p.tenant_name,
        f.identifier, 1, f.datatype,
        CASE WHEN f.datatype = 'string'
          THEN JSON_OBJECT('type', 'string', 'maxLength', 255)
+         WHEN f.identifier IN ('Jdl', 'UtilizationRate')
+         THEN JSON_OBJECT('type', 'decimal', 'min', 0, 'max', 100, 'step', 0.001, 'unit', f.unit)
          WHEN f.datatype = 'integer'
          THEN JSON_OBJECT('type', 'integer', 'min', -2147483648, 'max', 2147483647, 'step', 1, 'unit', f.unit)
          ELSE JSON_OBJECT('type', 'decimal', 'min', -1000000000, 'max', 1000000000, 'step', 0.001, 'unit', f.unit)
        END,
-       0, 0, 0, 1, 0, f.model_order, '0', 'codex', NOW()
+       IF(f.identifier IN ('Jdl', 'UtilizationRate'), 1, 0),
+       0, 0, 1, 0, f.model_order, '0', 'codex', NOW()
 FROM iot_product AS p
 JOIN JSON_TABLE('
 [
@@ -220,6 +223,11 @@ WHERE p.product_id = 34 AND p.status = 2
       AND existing.del_flag = '0'
   );
 SELECT ROW_COUNT() AS inserted_model_fields;
+UPDATE iot_things_model
+SET is_chart = 1, specs = JSON_SET(specs, '$.min', 0, '$.max', 100)
+WHERE product_id = 34 AND type = 1 AND del_flag = '0'
+  AND create_by = 'codex' AND identifier IN ('Jdl', 'UtilizationRate');
+SELECT ROW_COUNT() AS updated_chart_fields;
 SELECT COUNT(*) AS active_model_fields
 FROM iot_things_model WHERE product_id = 34 AND del_flag = '0';
 COMMIT;

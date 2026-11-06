@@ -21,6 +21,7 @@ import (
 	"runtime"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 )
@@ -74,10 +75,12 @@ var routes = map[string]route{
 }
 
 type bridge struct {
-	config  config
-	allowed []*net.IPNet
-	devices map[string]mqttDevice
-	wake    chan struct{}
+	config     config
+	allowed    []*net.IPNet
+	devices    map[string]mqttDevice
+	wake       chan struct{}
+	lastSeenMu sync.Mutex
+	lastSeen   map[string]time.Time
 }
 
 type queuedMessage struct {
@@ -183,7 +186,7 @@ func newBridge(c config) (*bridge, error) {
 	if c.ForwardMES && (!c.CaptureOnly || c.MESListen == "") {
 		return nil, errors.New("forward_mes requires capture_only and mes_listen")
 	}
-	b := &bridge{config: c, devices: make(map[string]mqttDevice), wake: make(chan struct{}, 1)}
+	b := &bridge{config: c, devices: make(map[string]mqttDevice), wake: make(chan struct{}, 1), lastSeen: make(map[string]time.Time)}
 	if len(c.MQTTDevices) > 0 {
 		for sourceID, identity := range c.MQTTDevices {
 			b.devices[sourceID] = identity
@@ -456,6 +459,11 @@ func (b *bridge) enqueue(message queuedMessage) error {
 	if err := persistJSON(b.config.QueueDir, message); err != nil {
 		return err
 	}
+	if identity, ok := b.devices[message.SourceID]; ok {
+		b.lastSeenMu.Lock()
+		b.lastSeen[identity.SerialNumber] = time.Now()
+		b.lastSeenMu.Unlock()
+	}
 	select {
 	case b.wake <- struct{}{}:
 	default:
@@ -501,6 +509,10 @@ func persistJSON(directory string, value interface{}) error {
 }
 
 func (b *bridge) flushOnce() error {
+	return b.flushWith(publishMQTT)
+}
+
+func (b *bridge) flushWith(send func(config, queuedMessage) error) error {
 	files, err := os.ReadDir(b.config.QueueDir)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil
@@ -553,20 +565,16 @@ func (b *bridge) flushOnce() error {
 		if failedSources[message.SourceID] {
 			continue
 		}
-		connection := b.config
-		connection.SerialNumber = identity.SerialNumber
-		connection.UserID = identity.UserID
-		connection.Username = identity.Username
-		connection.Password = identity.Password
+		connection := b.connectionFor(identity)
 		if len(message.PropertyPayload) > 0 {
 			propertyMessage := queuedMessage{Topic: "/" + b.config.ProductID + "/" + identity.SerialNumber + "/property/post", Payload: message.PropertyPayload}
-			if err := publishMQTT(connection, propertyMessage); err != nil {
+			if err := send(connection, propertyMessage); err != nil {
 				recordError(fmt.Errorf("queue file %s property: %w", path, err))
 				failedSources[message.SourceID] = true
 				continue
 			}
 		}
-		if err := publishMQTT(connection, message); err != nil {
+		if err := send(connection, message); err != nil {
 			recordError(fmt.Errorf("queue file %s: %w", path, err))
 			failedSources[message.SourceID] = true
 			continue
@@ -579,13 +587,85 @@ func (b *bridge) flushOnce() error {
 	return firstErr
 }
 
+func (b *bridge) connectionFor(identity mqttDevice) config {
+	connection := b.config
+	connection.SerialNumber = identity.SerialNumber
+	connection.UserID = identity.UserID
+	connection.Username = identity.Username
+	connection.Password = identity.Password
+	return connection
+}
+
+func (b *bridge) keepOnline(clients map[string]*mqttClient) {
+	now := time.Now()
+	b.lastSeenMu.Lock()
+	recent := make(map[string]time.Time, len(b.lastSeen))
+	for serial, seen := range b.lastSeen {
+		recent[serial] = seen
+	}
+	b.lastSeenMu.Unlock()
+	for serial, client := range clients {
+		if seen, ok := recent[serial]; !ok || now.Sub(seen) > 3*time.Minute {
+			client.disconnect()
+			delete(clients, serial)
+		}
+	}
+	for _, identity := range b.devices {
+		serial := identity.SerialNumber
+		if seen, ok := recent[serial]; !ok || now.Sub(seen) > 3*time.Minute {
+			continue
+		}
+		client := clients[serial]
+		if client == nil {
+			var err error
+			client, err = connectMQTT(b.connectionFor(identity))
+			if err != nil {
+				log.Printf("S1 MQTT reconnect %s: %v", serial, err)
+				continue
+			}
+			clients[serial] = client
+		}
+		if now.Sub(client.lastIO) >= 15*time.Second {
+			if err := client.ping(); err != nil {
+				log.Printf("S1 MQTT heartbeat %s: %v", serial, err)
+				_ = client.conn.Close()
+				delete(clients, serial)
+			}
+		}
+	}
+}
+
 func (b *bridge) runWorker(ctx context.Context) {
 	ticker := time.NewTicker(5 * time.Second)
 	defer ticker.Stop()
+	clients := make(map[string]*mqttClient)
+	defer func() {
+		for _, client := range clients {
+			client.disconnect()
+		}
+	}()
+	send := func(connection config, message queuedMessage) error {
+		client := clients[connection.SerialNumber]
+		if client == nil {
+			var err error
+			client, err = connectMQTT(connection)
+			if err != nil {
+				return err
+			}
+			clients[connection.SerialNumber] = client
+		}
+		if err := client.publish(message); err != nil {
+			_ = client.conn.Close()
+			delete(clients, connection.SerialNumber)
+			return err
+		}
+		return nil
+	}
 	for {
-		if err := b.flushOnce(); err != nil {
+		if err := b.flushWith(send); err != nil {
 			log.Printf("S1 forward retry: %v", err)
 		}
+		b.keepOnline(clients)
 		select {
 		case <-ctx.Done():
 			return

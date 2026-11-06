@@ -33,7 +33,7 @@
 
 每个原始 JSON 字段作为一条 S1 事件项，原字段名、JSON 类型、批次、分段序号写在 `remark` JSON 中。长值按 64 字符分段，同批各项放在一条 MQTT 消息。S1 事件时间是 S1 服务端接收时间；设备原始时间戳会作为普通字段保留。`queue/*.json` 保存原始报文和待发 MQTT 数据，收到 PUBACK 后移入 `queue/sent/` 留作核对及人工重放；PUBACK 并不代表 S1 数据库已落库。归档会持续增长，运维需核对 S1 入库后定期清理并监控磁盘空间。
 
-`/Equip/UploadJdl` 和 `/IO/UploadProcessQualityParameters` 还会把原字段写入 S1 属性主题，供设备的“运行状态”页显示；其余路由仍只写事件。产品 34 的 30 个属性字段定义在 [s1-product-34-model.sql](s1-product-34-model.sql)，其中 `Satus` 遵循厂家原始拼写。SQL 可重复执行，应用后清除 S1 Redis DB 8 的 `TSL:34` 键以刷新物模型缓存；无需取消产品发布。新字段的当前值在对应路由下一次上报后出现。
+`/Equip/UploadJdl` 和 `/IO/UploadProcessQualityParameters` 还会把原字段写入 S1 属性主题，供设备的“运行状态”页显示；其余路由仍只写事件。产品 34 的 30 个属性字段定义在 [s1-product-34-model.sql](s1-product-34-model.sql)，其中 `Satus` 遵循厂家原始拼写。稼动率和工艺利用率使用 0–100% 的仪表盘；其他数值字段尚无设备量程，按数值显示。SQL 可重复执行，应用后清除 S1 Redis DB 8 的 `TSL:34` 键以刷新物模型缓存；无需取消产品发布。新字段的当前值在对应路由下一次上报后出现。
 
 ## 构建与配置
 
@@ -73,13 +73,14 @@ chmod 600 config.json
 
 在 S1 后台创建金大立六轴锣机产品，传输方式选 MQTT，发布产品后创建设备并取 MQTT 连接信息。事件接收不依赖物模型，但建议创建上表八个事件标识以便界面识别。实际产品/设备必须使用现场编号，不能用 PDF 示例 `E1030ROUT017`。
 
-## 当前云端部署（2026-11-03）
+## 当前云端部署（2026-11-06）
 
 - Ubuntu x86_64 上的 `jdl-s1-bridge.service` 以独立 `jdlbridge` 账号运行，程序/私有配置位于 `/opt/jdl-s1-bridge`，原文位于 `/var/lib/jdl-s1-bridge/captures`。
 - OpenResty 的 `/data/1panel/www/conf.d/qms-browser-https-internal.conf` 将 `https://gongying.duckdns.org:5173/jdlSave/MchnData` 精确代理到本机 `127.0.0.1:7666`；修改前副本为同目录的 `.jdl-backup-20261103` 文件。
-- S1 产品“金大立六轴锣机”（ID `34`）已发布，首台设备 `E1807091137`（设备 ID `5`）已创建，云端 MQTT 连接验证成功。该设备网络在 13:40 的人工测试请求来自 `113.195.85.167`；`forward_mes` 已允许该出口 `/32` 与设备编号同时匹配时转发八个文档上传接口。这个公网 IP 与先前另一版软件的测试 IP 相同，须继续用实际报文中的设备编号区分。扫码请求只记录并返回 503；两条软件 URL 路径和原始 TCP 仍只记录，待真实报文确定格式后再映射。凭据只在云端私有配置中，不提交到仓库。
-- 按用户要求，8604 持续对所有 IP 开放：UFW 允许 IPv4/IPv6，程序无截止时间，且无待执行的关闭 timer。公网九个文档接口、两条软件 URL 路径、未知 HTTP 路径与原始 TCP 人工测试均通过；非可信来源或设备编号的文档上报会记录后返回 403，不进入 S1 队列。公共采样位于 `/var/lib/jdl-s1-bridge/mes-captures`，上限 10000 条且不自动删除；可信设备上报另在待发队列及 `sent/` 中保存完整原文。截至 2026-11-03 13:56（北京时间），尚无真实设备报文。
-- 2026-11-05 现场设备开始使用无 `/dataService/webapi` 前缀的路径上报，实际 `AssetsCode=JDLR0007`。接收器现兼容两种路径，并保存了原文；S1 尚未创建 `JDLR0007`，桥仍使用旧设备 `E1807091137` 的身份，因此这些请求返回 403。须先创建新设备并获取其独立 MQTT 凭据，再切换桥身份，不能只把新编号加入 `source_ids`。
+- S1 的 38093 入口由 OpenResty 的 `/data/1panel/www/stream.d/s1-38093-stream.conf` 分流：公网 IP 的 HTTP 保持 HTTP，`gongying.duckdns.org` 的 HTTPS 保持 HTTPS；站点配置在 `/data/1panel/www/conf.d/s1.conf`，变更前副本在 `/root/jdl-backups/s1-38093-dual-scheme-20261106/`。
+- S1 产品“金大立六轴锣机”（ID `34`）已发布，现有设备 `JDLR0006` 和 `JDLR0007` 使用各自的 MQTT 凭据；旧示例设备 `E1807091137` 已删除。设备持续上报时桥接器保持 MQTT 连接并发送心跳，停止上报 3 分钟后断开。凭据只在云端私有配置中，不提交到仓库。
+- 按用户要求，8604 持续对所有 IP 开放：UFW 允许 IPv4/IPv6，程序无截止时间，且无待执行的关闭 timer。公网九个文档接口、两条软件 URL 路径、未知 HTTP 路径与原始 TCP 人工测试均通过；非可信来源或设备编号的文档上报会记录后返回 403，不进入 S1 队列。公共采样位于 `/var/lib/jdl-s1-bridge/mes-captures`，上限 10000 条且不自动删除；可信设备上报另在待发队列及 `sent/` 中保存完整原文。
+- 2026-11-05 现场设备开始使用无 `/dataService/webapi` 前缀的路径上报。接收器兼容有无此前缀的路径，并保存原文；现在按 `AssetsCode` 将两台设备分别转发到 S1。
 
 ## 检查请求日志
 
