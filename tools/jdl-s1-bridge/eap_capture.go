@@ -13,13 +13,12 @@ import (
 )
 
 func documentedRoute(path string) (route, bool, bool) {
-	if path == basePath+"/Equip/MillingMachineAccessToTask" {
+	// The device firmware sends the documented routes without their base path.
+	path = strings.TrimPrefix(path, basePath)
+	if path == "/Equip/MillingMachineAccessToTask" {
 		return route{}, true, true
 	}
-	if !strings.HasPrefix(path, basePath+"/") {
-		return route{}, false, false
-	}
-	info, known := routes[strings.TrimPrefix(path, basePath)]
+	info, known := routes[path]
 	return info, false, known
 }
 

@@ -36,32 +36,35 @@ func TestCaptureModeRecordsEveryDocumentedInterface(t *testing.T) {
 		{"/uploadbrokenknife", `{"TransactionId":"20261103120000123","EqpId":"E1807091137"}`, `"Code":"0"`, http.StatusOK},
 	}
 	for _, tc := range cases {
-		t.Run(tc.path, func(t *testing.T) {
-			cfg := config{Listen: "127.0.0.1:7666", AllowedCIDRs: []string{"127.0.0.1/8"}, QueueDir: t.TempDir(), CaptureOnly: true, CaptureToken: strings.Repeat("a", 32)}
-			b, err := newBridge(cfg)
-			if err != nil {
-				t.Fatal(err)
-			}
-			w := mesPost(t, b, basePath+tc.path, tc.body)
-			if w.Code != tc.status || !strings.Contains(w.Body.String(), tc.response) {
-				t.Fatalf("response: %d %s", w.Code, w.Body.String())
-			}
-			files, _ := filepath.Glob(filepath.Join(cfg.QueueDir, "mes-captures", "*.json"))
-			if len(files) != 1 {
-				t.Fatalf("capture files = %d", len(files))
-			}
-			data, err := os.ReadFile(files[0])
-			if err != nil {
-				t.Fatal(err)
-			}
-			var record captureRecord
-			if err := json.Unmarshal(data, &record); err != nil {
-				t.Fatal(err)
-			}
-			if record.Path != basePath+tc.path || string(record.Body) != tc.body {
-				t.Fatalf("original request changed: %+v", record)
-			}
-		})
+		for _, prefix := range []string{basePath, ""} {
+			path := prefix + tc.path
+			t.Run(path, func(t *testing.T) {
+				cfg := config{Listen: "127.0.0.1:7666", AllowedCIDRs: []string{"127.0.0.1/8"}, QueueDir: t.TempDir(), CaptureOnly: true, CaptureToken: strings.Repeat("a", 32)}
+				b, err := newBridge(cfg)
+				if err != nil {
+					t.Fatal(err)
+				}
+				w := mesPost(t, b, path, tc.body)
+				if w.Code != tc.status || !strings.Contains(w.Body.String(), tc.response) {
+					t.Fatalf("response: %d %s", w.Code, w.Body.String())
+				}
+				files, _ := filepath.Glob(filepath.Join(cfg.QueueDir, "mes-captures", "*.json"))
+				if len(files) != 1 {
+					t.Fatalf("capture files = %d", len(files))
+				}
+				data, err := os.ReadFile(files[0])
+				if err != nil {
+					t.Fatal(err)
+				}
+				var record captureRecord
+				if err := json.Unmarshal(data, &record); err != nil {
+					t.Fatal(err)
+				}
+				if record.Path != path || string(record.Body) != tc.body {
+					t.Fatalf("original request changed: %+v", record)
+				}
+			})
+		}
 	}
 }
 
@@ -102,11 +105,12 @@ func TestMESForwardsOnlyConfirmedDeviceAndSource(t *testing.T) {
 		name, path, body, remote string
 		status, queued           int
 	}{
-		{"trusted status", "/IO/UploadDeviceStatus", `{"AssetsCode":"E1807091137","Count":9007199254740993}`, "113.195.85.167:12345", http.StatusOK, 1},
-		{"wrong device", "/IO/UploadDeviceStatus", `{"AssetsCode":"OTHER","S_Power":1}`, "113.195.85.167:12345", http.StatusForbidden, 0},
-		{"wrong source", "/IO/UploadDeviceStatus", `{"AssetsCode":"E1807091137","S_Power":1}`, "10.1.1.1:12345", http.StatusForbidden, 0},
-		{"scan stays capture only", "/Equip/MillingMachineAccessToTask", `{"AssetsCode":"E1807091137","VehicleCode":"LOT"}`, "113.195.85.167:12345", http.StatusServiceUnavailable, 0},
-		{"broken knife", "/uploadbrokenknife", `{"EqpId":"E1807091137","TransactionId":"TX1"}`, "113.195.85.167:12345", http.StatusOK, 1},
+		{"trusted status", basePath + "/IO/UploadDeviceStatus", `{"AssetsCode":"E1807091137","Count":9007199254740993}`, "113.195.85.167:12345", http.StatusOK, 1},
+		{"trusted short status", "/IO/UploadDeviceStatus", `{"AssetsCode":"E1807091137","Count":9007199254740993}`, "113.195.85.167:12345", http.StatusOK, 1},
+		{"wrong device", basePath + "/IO/UploadDeviceStatus", `{"AssetsCode":"OTHER","S_Power":1}`, "113.195.85.167:12345", http.StatusForbidden, 0},
+		{"wrong source", basePath + "/IO/UploadDeviceStatus", `{"AssetsCode":"E1807091137","S_Power":1}`, "10.1.1.1:12345", http.StatusForbidden, 0},
+		{"scan stays capture only", basePath + "/Equip/MillingMachineAccessToTask", `{"AssetsCode":"E1807091137","VehicleCode":"LOT"}`, "113.195.85.167:12345", http.StatusServiceUnavailable, 0},
+		{"broken knife", basePath + "/uploadbrokenknife", `{"EqpId":"E1807091137","TransactionId":"TX1"}`, "113.195.85.167:12345", http.StatusOK, 1},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -115,7 +119,7 @@ func TestMESForwardsOnlyConfirmedDeviceAndSource(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			request := httptest.NewRequest(http.MethodPost, basePath+tc.path, strings.NewReader(tc.body))
+			request := httptest.NewRequest(http.MethodPost, tc.path, strings.NewReader(tc.body))
 			request.RemoteAddr = tc.remote
 			response := httptest.NewRecorder()
 			(&mesMonitor{bridge: b}).handleHTTP(response, request)
@@ -130,7 +134,7 @@ func TestMESForwardsOnlyConfirmedDeviceAndSource(t *testing.T) {
 			if len(queued) != tc.queued {
 				t.Fatalf("queued messages = %d, want %d", len(queued), tc.queued)
 			}
-			if tc.name == "trusted status" {
+			if tc.name == "trusted status" || tc.name == "trusted short status" {
 				data, err := os.ReadFile(queued[0])
 				if err != nil {
 					t.Fatal(err)
@@ -139,7 +143,7 @@ func TestMESForwardsOnlyConfirmedDeviceAndSource(t *testing.T) {
 				if err := json.Unmarshal(data, &message); err != nil {
 					t.Fatal(err)
 				}
-				if message.Topic != "/34/E1807091137/event/post" || string(message.Raw) != tc.body || message.Capture == nil || message.Capture.RemoteAddr != tc.remote || string(message.Capture.Body) != tc.body || !strings.Contains(string(message.Payload), "9007199254740993") {
+				if message.Topic != "/34/E1807091137/event/post" || string(message.Raw) != tc.body || message.Capture == nil || message.Capture.Path != tc.path || message.Capture.RemoteAddr != tc.remote || string(message.Capture.Body) != tc.body || !strings.Contains(string(message.Payload), "9007199254740993") {
 					t.Fatalf("queued report changed: %+v", message)
 				}
 			}
