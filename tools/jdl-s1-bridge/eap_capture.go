@@ -79,7 +79,7 @@ func (b *bridge) handleDocumentCapture(w http.ResponseWriter, r *http.Request, p
 	}
 	record := captureRecord{Transport: "http", Path: r.URL.Path, Method: r.Method, Query: r.URL.RawQuery, Headers: r.Header.Clone(), ContentType: r.Header.Get("Content-Type"), RemoteAddr: r.RemoteAddr, ForwardedFor: r.Header.Get("X-Forwarded-For"), ReceivedAt: time.Now().Format(time.RFC3339Nano), Body: body, Truncated: truncated, ResponseStatus: status}
 	if forward {
-		// The durable MQTT queue also archives the full request when public capture storage is full.
+		// The durable MQTT queue retains the full request without a duplicate public capture.
 		forwardMessage.Capture = &record
 		if err := b.enqueue(forwardMessage); err != nil {
 			record.ResponseStatus = http.StatusServiceUnavailable
@@ -89,9 +89,6 @@ func (b *bridge) handleDocumentCapture(w http.ResponseWriter, r *http.Request, p
 			log.Printf("JDL EAP forward queue failed on %s from %s: %v", r.URL.Path, r.RemoteAddr, err)
 			writeFailure(w, http.StatusServiceUnavailable, info, "forward queue unavailable", transactionID)
 			return
-		}
-		if err := persist(record); err != nil {
-			log.Printf("JDL EAP public capture skipped on %s from %s: %v", r.URL.Path, r.RemoteAddr, err)
 		}
 		log.Printf("JDL EAP queued %s from %s: %d bytes", r.URL.Path, r.RemoteAddr, len(body))
 		writeUploadSuccess(w, info, transactionID)

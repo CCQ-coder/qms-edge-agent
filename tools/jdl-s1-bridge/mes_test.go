@@ -1,7 +1,10 @@
 package main
 
 import (
+	"archive/tar"
 	"bufio"
+	"compress/gzip"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -278,7 +281,7 @@ func TestMESEmptyConnectionsDoNotCreateCaptures(t *testing.T) {
 	}
 }
 
-func TestMESArchiveKeepsAllAcceptedReportsAndRejectsWhenFull(t *testing.T) {
+func TestMESArchiveRollsWhenFullAndCompressesWithoutLosingReports(t *testing.T) {
 	cfg := config{Listen: "127.0.0.1:7666", AllowedCIDRs: []string{"127.0.0.1/8"}, QueueDir: t.TempDir(), CaptureOnly: true, CaptureToken: strings.Repeat("a", 32), MESListen: "0.0.0.0:8604", MESMaxFiles: 3}
 	b, err := newBridge(cfg)
 	if err != nil {
@@ -317,12 +320,242 @@ func TestMESArchiveKeepsAllAcceptedReportsAndRejectsWhenFull(t *testing.T) {
 		t.Fatalf("5173 capture was modified: %q %v", data, err)
 	}
 	restarted := &mesMonitor{bridge: b}
-	if err := restarted.persistMES(captureRecord{Transport: "tcp", RemoteAddr: "10.2.0.1:1", Body: []byte("after-restart")}); !errors.Is(err, errMESArchiveFull) {
+	if err := restarted.persistMES(captureRecord{Transport: "tcp", RemoteAddr: "10.2.0.1:1", Body: []byte("after-restart")}); err != nil {
 		t.Fatalf("full archive after restart = %v", err)
 	}
 	files, _ = filepath.Glob(filepath.Join(cfg.QueueDir, "mes-captures", "*.json"))
-	if len(files) != cfg.MESMaxFiles {
-		t.Fatalf("full archive changed after rejected write: %d", len(files))
+	if len(files) != 1 {
+		t.Fatalf("new capture directory has %d files, want 1", len(files))
+	}
+	rolled, _ := filepath.Glob(filepath.Join(cfg.QueueDir, "mes-captures-rolled-*"))
+	if len(rolled) != 1 {
+		t.Fatalf("rolled directories = %d, want 1", len(rolled))
+	}
+	if err := compressMESArchive(rolled[0]); err != nil {
+		t.Fatalf("compress rolled capture directory: %v", err)
+	}
+	if _, err := os.Stat(rolled[0]); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("source directory remains after verified archive: %v", err)
+	}
+	archive, err := os.Open(rolled[0] + ".tar.gz")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer archive.Close()
+	compressed, err := gzip.NewReader(archive)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reader := tar.NewReader(compressed)
+	var bodies []string
+	for {
+		_, err := reader.Next()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		var record captureRecord
+		if err := json.NewDecoder(reader).Decode(&record); err != nil {
+			t.Fatal(err)
+		}
+		bodies = append(bodies, string(record.Body))
+	}
+	if len(bodies) != cfg.MESMaxFiles || bodies[0] != "record-000" {
+		t.Fatalf("compressed archive reports = %v", bodies)
+	}
+}
+
+func TestMESArchiveRollsAtLocalDayBoundary(t *testing.T) {
+	cfg := config{Listen: "127.0.0.1:7666", AllowedCIDRs: []string{"127.0.0.1/8"}, QueueDir: t.TempDir(), CaptureOnly: true, CaptureToken: strings.Repeat("a", 32), MESListen: "0.0.0.0:8604", MESMaxFiles: 3}
+	b, err := newBridge(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := &mesMonitor{bridge: b}
+	if err := m.persistMES(captureRecord{RemoteAddr: "10.4.0.1:1", Body: []byte("yesterday")}); err != nil {
+		t.Fatal(err)
+	}
+	files, _ := filepath.Glob(filepath.Join(cfg.QueueDir, "mes-captures", "*.json"))
+	yesterday := time.Now().In(time.Local).AddDate(0, 0, -1)
+	if err := os.Chtimes(files[0], yesterday, yesterday); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.persistMES(captureRecord{RemoteAddr: "10.4.0.2:1", Body: []byte("today")}); err != nil {
+		t.Fatal(err)
+	}
+	rolled, _ := filepath.Glob(filepath.Join(cfg.QueueDir, "mes-captures-rolled-*"))
+	if len(rolled) != 1 {
+		t.Fatalf("local-day rollover created %d directories, want 1", len(rolled))
+	}
+	files, _ = filepath.Glob(filepath.Join(cfg.QueueDir, "mes-captures", "*.json"))
+	if len(files) != 1 {
+		t.Fatalf("active directory after day rollover has %d reports, want 1", len(files))
+	}
+}
+
+func TestMESArchiveWorkerRollsOldDayWithoutNewRequest(t *testing.T) {
+	cfg := config{Listen: "127.0.0.1:7666", AllowedCIDRs: []string{"127.0.0.1/8"}, QueueDir: t.TempDir(), CaptureOnly: true, CaptureToken: strings.Repeat("a", 32), MESListen: "0.0.0.0:8604"}
+	b, err := newBridge(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := &mesMonitor{bridge: b}
+	if err := m.persistMES(captureRecord{RemoteAddr: "10.4.0.1:1", Body: []byte("old-day")}); err != nil {
+		t.Fatal(err)
+	}
+	files, _ := filepath.Glob(filepath.Join(cfg.QueueDir, "mes-captures", "*.json"))
+	yesterday := time.Now().In(time.Local).AddDate(0, 0, -1)
+	if err := os.Chtimes(files[0], yesterday, yesterday); err != nil {
+		t.Fatal(err)
+	}
+	restarted := &mesMonitor{bridge: b, archiveWake: make(chan struct{}, 1)}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { defer close(done); restarted.runMESArchiveWorker(ctx) }()
+	defer func() { cancel(); <-done }()
+	restarted.wakeMESArchiveWorker()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		archives, _ := filepath.Glob(filepath.Join(cfg.QueueDir, "mes-captures-rolled-*.tar.gz"))
+		active, _ := filepath.Glob(filepath.Join(cfg.QueueDir, "mes-captures", "*.json"))
+		if len(archives) == 1 && len(active) == 0 {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("old-day capture was not rotated and compressed at worker startup")
+}
+
+func TestMESArchiveNamesAreUniqueForRepeatedSameDayRolls(t *testing.T) {
+	cfg := config{Listen: "127.0.0.1:7666", AllowedCIDRs: []string{"127.0.0.1/8"}, QueueDir: t.TempDir(), CaptureOnly: true, CaptureToken: strings.Repeat("a", 32), MESListen: "0.0.0.0:8604", MESMaxFiles: 1}
+	b, err := newBridge(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := &mesMonitor{bridge: b}
+	for i := 0; i < 3; i++ {
+		if err := m.persistMES(captureRecord{RemoteAddr: fmt.Sprintf("10.4.0.%d:1", i+1), Body: []byte{byte(i)}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	rolled, _ := filepath.Glob(filepath.Join(cfg.QueueDir, "mes-captures-rolled-*"))
+	if len(rolled) != 2 || rolled[0] == rolled[1] {
+		t.Fatalf("same-day rolled directories = %v, want two unique names", rolled)
+	}
+	for _, directory := range rolled {
+		files, _ := filepath.Glob(filepath.Join(directory, "mes-captures", "*.json"))
+		if len(files) != 1 {
+			t.Fatalf("rolled directory %s has %d reports", directory, len(files))
+		}
+	}
+}
+
+func TestMESArchiveWorkerResumesCompressionAfterRestart(t *testing.T) {
+	cfg := config{Listen: "127.0.0.1:7666", AllowedCIDRs: []string{"127.0.0.1/8"}, QueueDir: t.TempDir(), CaptureOnly: true, CaptureToken: strings.Repeat("a", 32), MESListen: "0.0.0.0:8604", MESMaxFiles: 1}
+	b, err := newBridge(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := &mesMonitor{bridge: b}
+	for i := 0; i < 2; i++ {
+		if err := m.persistMES(captureRecord{RemoteAddr: fmt.Sprintf("10.4.1.%d:1", i+1), Body: []byte{byte(i)}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	rolled, _ := filepath.Glob(filepath.Join(cfg.QueueDir, "mes-captures-rolled-*"))
+	if len(rolled) != 1 {
+		t.Fatalf("rolled directories = %v", rolled)
+	}
+	restarted := &mesMonitor{bridge: b, archiveWake: make(chan struct{}, 1)}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { defer close(done); restarted.runMESArchiveWorker(ctx) }()
+	defer func() { cancel(); <-done }()
+	restarted.wakeMESArchiveWorker()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(rolled[0] + ".tar.gz"); err == nil {
+			if _, err := os.Stat(rolled[0]); errors.Is(err, os.ErrNotExist) {
+				return
+			}
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("archive worker did not resume compression")
+}
+
+func TestMESArchiveRecoversInterruptedDeletion(t *testing.T) {
+	cfg := config{Listen: "127.0.0.1:7666", AllowedCIDRs: []string{"127.0.0.1/8"}, QueueDir: t.TempDir(), CaptureOnly: true, CaptureToken: strings.Repeat("a", 32), MESListen: "0.0.0.0:8604", MESMaxFiles: 1}
+	b, err := newBridge(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := &mesMonitor{bridge: b}
+	for i := 0; i < 2; i++ {
+		if err := m.persistMES(captureRecord{RemoteAddr: fmt.Sprintf("10.4.3.%d:1", i+1), Body: []byte{byte(i)}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	rolled, _ := filepath.Glob(filepath.Join(cfg.QueueDir, "mes-captures-rolled-*"))
+	files, _ := filepath.Glob(filepath.Join(rolled[0], "mes-captures", "*.json"))
+	leftover, err := os.ReadFile(files[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := compressMESArchive(rolled[0]); err != nil {
+		t.Fatal(err)
+	}
+	deleting := rolled[0] + ".deleting"
+	if err := os.MkdirAll(filepath.Join(deleting, "mes-captures"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(deleting, "mes-captures", filepath.Base(files[0])), leftover, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := finishMESArchiveDeletion(deleting); err != nil {
+		t.Fatalf("resume interrupted deletion: %v", err)
+	}
+	if _, err := os.Stat(deleting); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("cleanup directory remains: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(deleting, "mes-captures"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(deleting, "mes-captures", "unarchived.json"), []byte("not in archive"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := finishMESArchiveDeletion(deleting); err == nil {
+		t.Fatal("unarchived source file was deleted")
+	}
+	if _, err := os.Stat(filepath.Join(deleting, "mes-captures", "unarchived.json")); err != nil {
+		t.Fatalf("unarchived source file was lost: %v", err)
+	}
+}
+
+func TestMESArchiveLeavesSourceWhenCompressedFileIsInvalid(t *testing.T) {
+	cfg := config{Listen: "127.0.0.1:7666", AllowedCIDRs: []string{"127.0.0.1/8"}, QueueDir: t.TempDir(), CaptureOnly: true, CaptureToken: strings.Repeat("a", 32), MESListen: "0.0.0.0:8604", MESMaxFiles: 1}
+	b, err := newBridge(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := &mesMonitor{bridge: b}
+	for i := 0; i < 2; i++ {
+		if err := m.persistMES(captureRecord{RemoteAddr: fmt.Sprintf("10.4.2.%d:1", i+1), Body: []byte{byte(i)}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	rolled, _ := filepath.Glob(filepath.Join(cfg.QueueDir, "mes-captures-rolled-*"))
+	if err := os.WriteFile(rolled[0]+".tar.gz", []byte("bad archive"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := compressMESArchive(rolled[0]); err == nil {
+		t.Fatal("invalid compressed file was accepted")
+	}
+	files, _ := filepath.Glob(filepath.Join(rolled[0], "mes-captures", "*.json"))
+	if len(files) != 1 {
+		t.Fatalf("source reports removed after invalid archive: %d", len(files))
 	}
 }
 

@@ -127,8 +127,12 @@ func TestMESForwardsOnlyConfirmedDeviceAndSource(t *testing.T) {
 				t.Fatalf("response status = %d, want %d: %s", response.Code, tc.status, response.Body.String())
 			}
 			captures, _ := filepath.Glob(filepath.Join(cfg.QueueDir, "mes-captures", "*.json"))
-			if len(captures) != 1 {
-				t.Fatalf("captures = %d", len(captures))
+			wantCaptures := 1
+			if tc.queued == 1 {
+				wantCaptures = 0
+			}
+			if len(captures) != wantCaptures {
+				t.Fatalf("captures = %d, want %d", len(captures), wantCaptures)
 			}
 			queued, _ := filepath.Glob(filepath.Join(cfg.QueueDir, "*.json"))
 			if len(queued) != tc.queued {

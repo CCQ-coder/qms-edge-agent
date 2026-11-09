@@ -10,9 +10,9 @@
 
 ## 首条报文采样
 
-将 `capture.example.json` 复制为 `config.json`，用 `openssl rand -hex 24` 生成至少 32 位的 `capture_token`，并设置私有的 `queue_dir`。原有 5173 HTTPS 入口只接收 `/jdlSave/MchnData?key=<capture_token>`，原文位于 `queue/captures/*.json`。8604 HTTP 入口接收下表九个文档接口；每个请求的路径、方法、查询参数、请求头、来源、时间、原始正文及预定应答状态先持久落盘。文档中的八个上传接口在保存成功后返回其成功应答，非法请求或磁盘不可写时返回错误。扫码取任务接口会记录请求，但在缺少真实生产任务来源时返回 HTTP 503，不能用虚构任务驱动设备生产。原文的 `body` 字段是 Base64 编码的原始字节。默认只记录；确认设备编号、来源和 S1 凭据后，可启用 `forward_mes` 转发八个上传接口。
+将 `capture.example.json` 复制为 `config.json`，用 `openssl rand -hex 24` 生成至少 32 位的 `capture_token`，并设置私有的 `queue_dir`。原有 5173 HTTPS 入口只接收 `/jdlSave/MchnData?key=<capture_token>`，原文位于 `queue/captures/*.json`。8604 HTTP 入口接收下表九个文档接口；纯采样模式先持久保存每个请求的路径、方法、查询参数、请求头、来源、时间、原始正文及预定应答状态；启用转发后，已验证且成功入队的原文保存在待发队列及 `sent/`。文档中的八个上传接口在保存成功后返回其成功应答，非法请求或磁盘不可写时返回错误。扫码取任务接口会记录请求，但在缺少真实生产任务来源时返回 HTTP 503，不能用虚构任务驱动设备生产。原文的 `body` 字段是 Base64 编码的原始字节。默认只记录；确认设备编号、来源和 S1 凭据后，可启用 `forward_mes` 转发八个上传接口。
 
-另一版软件可设置 `"mes_listen":"0.0.0.0:8604"`，在同一端口采样 HTTP GET/POST `/httptest.php`、`/jdlSave/MchnData`、下表九个文档接口，以及其他原始 MES TCP 字节流；未知 HTTP 路径和错误方法也会存档，再返回 404/405。省略 `mes_capture_until` 时持续监听，也可填写未来 30 分钟内的 RFC3339 时间作限时观察。8604 原文单独保存在 `queue/mes-captures`，**不自动删除**；默认最多保存 10000 个文件，可用 `mes_max_files` 调整。达到上限时普通采样 HTTP 返回 503、原始 TCP 关闭；已验证的设备上报仍可写入包含完整原文的持久 MQTT 队列。每条正文最多 64 KiB；单 IP 同时最多 4 条连接、每分钟最多 30 条成功采样；全局同时最多 16 条连接、每分钟最多 300 条成功采样。公网入口没有强设备认证；启用 `forward_mes` 后，仅匹配 `source_ids` 和 `allowed_cidrs` 的八个文档上传接口转发 S1，扫码、`/httptest.php`、`/jdlSave/MchnData` 和原始 TCP 继续只记录。原始 TCP 缺少厂家分帧与应答规范，采样不代表生产软件认为上传成功。
+另一版软件可设置 `"mes_listen":"0.0.0.0:8604"`，在同一端口采样 HTTP GET/POST `/httptest.php`、`/jdlSave/MchnData`、下表九个文档接口，以及其他原始 MES TCP 字节流；未知 HTTP 路径和错误方法也会存档，再返回 404/405。省略 `mes_capture_until` 时持续监听，也可填写未来 30 分钟内的 RFC3339 时间作限时观察。未入队的 8604 原文保存在 `queue/mes-captures`；程序按运行环境的本地自然日（云端为上海时间）或目录文件上限轮换，并在后台校验后压缩为 `queue/mes-captures-rolled-*.tar.gz`，压缩包不自动删除。默认每批最多 10000 个文件，可用 `mes_max_files` 调整；轮换或落盘失败时普通采样 HTTP 返回 503、原始 TCP 关闭，已验证的设备仍可通过持久 MQTT 队列上报。每条正文最多 64 KiB；单 IP 同时最多 4 条连接、每分钟最多 30 条成功采样；全局同时最多 16 条连接、每分钟最多 300 条成功采样。公网入口没有强设备认证；启用 `forward_mes` 后，仅将设备编号匹配 `source_ids` 或 `mqtt_devices`、且来源 IP 匹配 `allowed_cidrs` 的八个文档上传接口转发 S1，扫码、`/httptest.php`、`/jdlSave/MchnData` 和原始 TCP 继续只记录。原始 TCP 缺少厂家分帧与应答规范，采样不代表生产软件认为上传成功。
 
 ## 接口
 
@@ -33,6 +33,8 @@
 
 每个原始 JSON 字段作为一条 S1 事件项，原字段名、JSON 类型、批次、分段序号写在 `remark` JSON 中。长值按 64 字符分段，同批各项放在一条 MQTT 消息。S1 事件时间是 S1 服务端接收时间；设备原始时间戳会作为普通字段保留。`queue/*.json` 保存原始报文和待发 MQTT 数据，收到 PUBACK 后移入 `queue/sent/` 留作核对及人工重放；PUBACK 并不代表 S1 数据库已落库。归档会持续增长，运维需核对 S1 入库后定期清理并监控磁盘空间。
 
+启用转发后，已验证且成功入队的文档上报只在待发队列及 `sent/` 保存完整原文，不再复制到 `mes-captures/`；未接入、错误及探测请求仍保存在公共采样目录。
+
 `/Equip/UploadJdl` 和 `/IO/UploadProcessQualityParameters` 还会把原字段写入 S1 属性主题，供设备的“运行状态”页显示；其余路由仍只写事件。产品 34 的 30 个属性字段定义在 [s1-product-34-model.sql](s1-product-34-model.sql)，其中 `Satus` 遵循厂家原始拼写。稼动率和工艺利用率使用 0–100% 的仪表盘；其他数值字段尚无设备量程，按数值显示。SQL 可重复执行，应用后清除 S1 Redis DB 8 的 `TSL:34` 键以刷新物模型缓存；无需取消产品发布。新字段的当前值在对应路由下一次上报后出现。
 
 ## 构建与配置
@@ -52,8 +54,8 @@ chmod 600 config.json
 - `source_ids`：旧版单设备配置中允许的真实 `AssetsCode`，以及断刀报文中的 `EqpId`（如果不同）。未列出的编号返回 403。
 - `mqtt_devices`：多台设备共用 8604 时，按报文中的 `AssetsCode`（断刀用 `EqpId`）分别填写各自在 S1 创建后取得的 `serial_number`、`user_id`、`username`、`password`；键必须等于 `serial_number`。此模式不能同时填写旧版 `source_ids`、顶层 MQTT 身份字段。队列只保存来源编号，不保存凭据；切换前须确认旧待发队列为空。
 - `queue_dir`：只有服务账号可读写的持久目录；请监控磁盘空间，勿放在临时目录。
-- `mes_max_files`：8604 公共采样目录的文件上限，默认 10000、最大 100000；达到上限时拒收普通采样报文，但已验证设备的文档上传可在持久 MQTT 队列保存完整原文后继续处理。旧记录不自动删除。每条正文上限 64 KiB，加上 Base64 与请求头开销，默认公共采样上限约占 1 GiB。
-- `forward_mes`：仅与 `capture_only=true`、`mes_listen` 同用；启用后需填写 `source_ids` 和 S1 MQTT 字段。只有设备编号及真实来源 IP 均匹配的八个文档上传接口入队；其他请求照常记录。队列及 `sent/` 归档无自动清理，请监控磁盘。
+- `mes_max_files`：8604 单批公共采样文件上限，默认 10000、最大 100000；到上限时轮换并继续采样。轮换压缩失败时保留原目录并记录错误；压缩包和 `sent/` 都不自动删除，请监控磁盘。
+- `forward_mes`：仅与 `capture_only=true`、`mes_listen` 同用；启用后需填写旧版 `source_ids` 与顶层 S1 MQTT 字段，或使用多设备 `mqtt_devices`。只有设备编号及真实来源 IP 均匹配的八个文档上传接口入队；其他请求照常记录。队列及 `sent/` 归档无自动清理，请监控磁盘。
 - `broker` 及其余 MQTT 字段：从已发布的 S1 产品、设备连接信息中取得。MQTT 凭据通过明文 MQTT 3.1.1 传输，`broker` 只允许本机回环地址；若 S1 在别的主机，先建立受保护的 SSH/VPN 隧道。产品 ID、用户 ID 必须是数字，S1 设备编号仅用字母数字。
 
 多设备配置示例（凭据从各自 S1 设备连接信息取得，不要提交实际配置）：
@@ -73,14 +75,14 @@ chmod 600 config.json
 
 在 S1 后台创建金大立六轴锣机产品，传输方式选 MQTT，发布产品后创建设备并取 MQTT 连接信息。事件接收不依赖物模型，但建议创建上表八个事件标识以便界面识别。实际产品/设备必须使用现场编号，不能用 PDF 示例 `E1030ROUT017`。
 
-## 当前云端部署（2026-11-06）
+## 当前云端部署（2026-11-09）
 
 - Ubuntu x86_64 上的 `jdl-s1-bridge.service` 以独立 `jdlbridge` 账号运行，程序/私有配置位于 `/opt/jdl-s1-bridge`，原文位于 `/var/lib/jdl-s1-bridge/captures`。
 - OpenResty 的 `/data/1panel/www/conf.d/qms-browser-https-internal.conf` 将 `https://gongying.duckdns.org:5173/jdlSave/MchnData` 精确代理到本机 `127.0.0.1:7666`；修改前副本为同目录的 `.jdl-backup-20261103` 文件。
 - S1 的 38093 入口由 OpenResty 的 `/data/1panel/www/stream.d/s1-38093-stream.conf` 分流：公网 IP 的 HTTP 保持 HTTP，`gongying.duckdns.org` 的 HTTPS 保持 HTTPS；站点配置在 `/data/1panel/www/conf.d/s1.conf`，变更前副本在 `/root/jdl-backups/s1-38093-dual-scheme-20261106/`。
-- S1 产品“金大立六轴锣机”（ID `34`）已发布，现有设备 `JDLR0006` 和 `JDLR0007` 使用各自的 MQTT 凭据；旧示例设备 `E1807091137` 已删除。设备持续上报时桥接器保持 MQTT 连接并发送心跳，停止上报 3 分钟后断开。凭据只在云端私有配置中，不提交到仓库。
-- 按用户要求，8604 持续对所有 IP 开放：UFW 允许 IPv4/IPv6，程序无截止时间，且无待执行的关闭 timer。公网九个文档接口、两条软件 URL 路径、未知 HTTP 路径与原始 TCP 人工测试均通过；非可信来源或设备编号的文档上报会记录后返回 403，不进入 S1 队列。公共采样位于 `/var/lib/jdl-s1-bridge/mes-captures`，上限 10000 条且不自动删除；可信设备上报另在待发队列及 `sent/` 中保存完整原文。
-- 2026-11-05 现场设备开始使用无 `/dataService/webapi` 前缀的路径上报。接收器兼容有无此前缀的路径，并保存原文；现在按 `AssetsCode` 将两台设备分别转发到 S1。
+- S1 产品“金大立六轴锣机”（ID `34`）已发布，现有设备 `JDLR0005`、`JDLR0006`、`JDLR0007`、`JDLR0011` 使用 S1 MQTT 身份；旧示例设备 `E1807091137` 已删除。设备持续上报时桥接器保持 MQTT 连接并发送心跳，停止上报 3 分钟后断开。凭据只在云端私有配置中，不提交到仓库。
+- 按用户要求，8604 持续对所有 IP 开放：UFW 允许 IPv4/IPv6，程序无截止时间，且无待执行的关闭 timer。公网九个文档接口、两条软件 URL 路径、未知 HTTP 路径与原始 TCP 人工测试均通过；非可信来源或设备编号的文档上报会记录后返回 403，不进入 S1 队列。公共采样位于 `/var/lib/jdl-s1-bridge/mes-captures`，按天或达到 10000 条时无损压缩轮换；可信设备上报仅在待发队列及 `sent/` 保存完整原文。11 月 9 日的旧满额目录已校验压缩为 `mes-captures-archive-20261109.tar.gz`。
+- 2026-11-05 现场设备开始使用无 `/dataService/webapi` 前缀的路径上报。接收器兼容有无此前缀的路径，并保存原文；现在按 `AssetsCode` 将四台设备分别转发到 S1。
 
 ## 检查请求日志
 
@@ -91,4 +93,4 @@ journalctl -u jdl-s1-bridge --since '30 minutes ago' -o short-iso | grep 'JDL re
 journalctl -u jdl-s1-bridge -f -o short-iso
 ```
 
-`read_bytes` 是程序实际读取的字节数；若请求在读取正文前被拒绝，显示 0。查询参数、请求头及正文只保存在权限受限的 `/var/lib/jdl-s1-bridge/mes-captures/*.json` 或 `captures/*.json` 中，不写入 journal。连接限流或无法解析成 HTTP 的流量仍受现有采样限制。
+`read_bytes` 是程序实际读取的字节数；若请求在读取正文前被拒绝，显示 0。查询参数、请求头及正文只保存在权限受限的 `mes-captures/`、其压缩归档、`sent/` 或 `captures/` 中，不写入 journal。连接限流或无法解析成 HTTP 的流量仍受现有采样限制。

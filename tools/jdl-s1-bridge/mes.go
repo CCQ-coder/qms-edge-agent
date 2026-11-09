@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -23,22 +24,22 @@ const maxMESPerIPPerMinute = 30
 const maxMESGlobalPerMinute = 300
 
 var errMESRateLimited = errors.New("MES capture rate limit reached")
-var errMESArchiveFull = errors.New("MES capture archive is full")
 
 type mesMonitor struct {
-	bridge     *bridge
-	until      time.Time
-	clients    chan struct{}
-	httpIn     *mesHTTPListener
-	activeMu   sync.Mutex
-	activeByIP map[string]int
-	logMu      sync.Mutex
-	logWindow  time.Time
-	logCount   int
-	storeMu    sync.Mutex
-	rateStart  time.Time
-	rateGlobal int
-	rateByIP   map[string]int
+	bridge      *bridge
+	until       time.Time
+	clients     chan struct{}
+	httpIn      *mesHTTPListener
+	activeMu    sync.Mutex
+	activeByIP  map[string]int
+	logMu       sync.Mutex
+	logWindow   time.Time
+	logCount    int
+	storeMu     sync.Mutex
+	rateStart   time.Time
+	rateGlobal  int
+	rateByIP    map[string]int
+	archiveWake chan struct{}
 }
 
 type mesHTTPListener struct {
@@ -90,6 +91,11 @@ func (b *bridge) serveMESCapture(listener net.Listener, until time.Time) error {
 		return nil
 	}
 	m := &mesMonitor{bridge: b, until: until, clients: make(chan struct{}, maxMESConnections), activeByIP: make(map[string]int)}
+	m.archiveWake = make(chan struct{}, 1)
+	archiveContext, stopArchives := context.WithCancel(context.Background())
+	defer stopArchives()
+	go m.runMESArchiveWorker(archiveContext)
+	m.wakeMESArchiveWorker()
 	m.httpIn = &mesHTTPListener{addr: listener.Addr(), conns: make(chan net.Conn, maxMESConnections), done: make(chan struct{})}
 	server := &http.Server{Handler: logRequests("mes", http.HandlerFunc(m.handleHTTP)), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, WriteTimeout: 10 * time.Second, IdleTimeout: 5 * time.Second, MaxHeaderBytes: 8192}
 	server.SetKeepAlivesEnabled(false)
@@ -197,17 +203,28 @@ func (m *mesMonitor) persistMES(record captureRecord) error {
 		return err
 	}
 	fileCount := 0
+	var oldest time.Time
 	for _, entry := range entries {
 		if !entry.IsDir() && strings.HasSuffix(entry.Name(), ".json") {
 			fileCount++
+			if oldest.IsZero() {
+				// persistJSON names files in timestamp order, so the first JSON file is oldest.
+				info, err := entry.Info()
+				if err != nil {
+					return err
+				}
+				oldest = info.ModTime()
+			}
 		}
 	}
 	limit := m.bridge.config.MESMaxFiles
 	if limit == 0 {
 		limit = defaultMESMaxFiles
 	}
-	if fileCount >= limit {
-		return errMESArchiveFull
+	if fileCount >= limit || (!oldest.IsZero() && oldest.In(time.Local).Format("20060102") != now.In(time.Local).Format("20060102")) {
+		if err := m.rollMESDirectory(directory, now); err != nil {
+			return err
+		}
 	}
 	if err := persistJSON(directory, record); err != nil {
 		return err
