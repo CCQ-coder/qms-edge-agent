@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -38,6 +39,22 @@ func postMultiDevice(t *testing.T, b *bridge, sourceID string, wantStatus int) {
 	if w.Code != wantStatus {
 		t.Fatalf("%s status = %d, want %d: %s", sourceID, w.Code, wantStatus, w.Body.String())
 	}
+}
+
+func TestExplicitGlobalCIDRsAllowConfiguredDevicesFromAnyIP(t *testing.T) {
+	cfg := multiDeviceConfig(t)
+	cfg.AllowedCIDRs = []string{"0.0.0.0/0", "::/0"}
+	b, err := newBridge(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, address := range []string{"203.0.113.7", "2001:db8::7"} {
+		if !b.sourceAllowed(net.ParseIP(address)) {
+			t.Fatalf("source %s was rejected", address)
+		}
+	}
+	postMultiDevice(t, b, "JDLR0006", 200)
+	postMultiDevice(t, b, "UNKNOWN", 403)
 }
 
 func TestMultiDeviceQueueAndRestartUseSeparateMQTTIdentities(t *testing.T) {

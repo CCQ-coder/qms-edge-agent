@@ -50,7 +50,7 @@ chmod 600 config.json
 编辑 `config.json`：
 
 - `listen`：主监听器只接受数字形式的本机回环地址，例如 `127.0.0.1:7666`；通过 HTTPS 反向代理或私有隧道供设备访问。文档中的 `7666` 仅是厂家示例，不保证云端空闲。单独的 `mes_listen` 已按用户要求在公网 8604 开放，作为有界原文采样和已验证设备的文档接口入口。
-- `allowed_cidrs`：本程序看到的可信来源 IP，例如本机反向代理为 `127.0.0.1/8`；启用 `forward_mes` 时加入已验证设备出口的 `/32`，只允许这些来源转发到 S1。公网 8604 仍记录其他来源。空值和全网段会被拒绝；本程序不信任 `X-Forwarded-For`。
+- `allowed_cidrs`：本程序看到的来源 IP，例如本机反向代理为 `127.0.0.1/8`；启用 `forward_mes` 时可加入设备出口的 `/32`。若现场出口不固定，可显式配置 `0.0.0.0/0` 和 `::/0` 允许所有 IPv4/IPv6 来源；公网 8604 没有强设备认证，知道已配置设备编号的第三方也可能伪造上报。空值会被拒绝；本程序不信任 `X-Forwarded-For`。
 - `source_ids`：旧版单设备配置中允许的真实 `AssetsCode`，以及断刀报文中的 `EqpId`（如果不同）。未列出的编号返回 403。
 - `mqtt_devices`：多台设备共用 8604 时，按报文中的 `AssetsCode`（断刀用 `EqpId`）分别填写各自在 S1 创建后取得的 `serial_number`、`user_id`、`username`、`password`；键必须等于 `serial_number`。此模式不能同时填写旧版 `source_ids`、顶层 MQTT 身份字段。队列只保存来源编号，不保存凭据；切换前须确认旧待发队列为空。
 - `queue_dir`：只有服务账号可读写的持久目录；请监控磁盘空间，勿放在临时目录。
@@ -81,7 +81,7 @@ chmod 600 config.json
 - OpenResty 的 `/data/1panel/www/conf.d/qms-browser-https-internal.conf` 将 `https://gongying.duckdns.org:5173/jdlSave/MchnData` 精确代理到本机 `127.0.0.1:7666`；修改前副本为同目录的 `.jdl-backup-20261103` 文件。
 - S1 的 38093 入口由 OpenResty 的 `/data/1panel/www/stream.d/s1-38093-stream.conf` 分流：公网 IP 的 HTTP 保持 HTTP，`gongying.duckdns.org` 的 HTTPS 保持 HTTPS；站点配置在 `/data/1panel/www/conf.d/s1.conf`，变更前副本在 `/root/jdl-backups/s1-38093-dual-scheme-20261106/`。
 - S1 产品“金大立六轴锣机”（ID `34`）已发布，现有设备 `JDLR0005`、`JDLR0006`、`JDLR0007`、`JDLR0011` 使用 S1 MQTT 身份；旧示例设备 `E1807091137` 已删除。设备持续上报时桥接器保持 MQTT 连接并发送心跳，停止上报 3 分钟后断开。凭据只在云端私有配置中，不提交到仓库。
-- 按用户要求，8604 持续对所有 IP 开放：UFW 允许 IPv4/IPv6，程序无截止时间，且无待执行的关闭 timer。公网九个文档接口、两条软件 URL 路径、未知 HTTP 路径与原始 TCP 人工测试均通过；非可信来源或设备编号的文档上报会记录后返回 403，不进入 S1 队列。公共采样位于 `/var/lib/jdl-s1-bridge/mes-captures`，按天或达到 10000 条时无损压缩轮换；可信设备上报仅在待发队列及 `sent/` 保存完整原文。11 月 9 日的旧满额目录已校验压缩为 `mes-captures-archive-20261109.tar.gz`。
+- 按用户要求，8604 持续对所有 IP 开放：UFW 允许 IPv4/IPv6，程序无截止时间，且无待执行的关闭 timer。公网九个文档接口、两条软件 URL 路径、未知 HTTP 路径与原始 TCP 人工测试均通过；设备编号不匹配的文档上报会记录后返回 403，不进入 S1 队列。2026-11-16 起转发来源也允许所有 IPv4/IPv6 IP，仍要求设备编号匹配。公共采样位于 `/var/lib/jdl-s1-bridge/mes-captures`，按天或达到 10000 条时无损压缩轮换；已接受的设备上报仅在待发队列及 `sent/` 保存完整原文。11 月 9 日的旧满额目录已校验压缩为 `mes-captures-archive-20261109.tar.gz`。
 - 2026-11-05 现场设备开始使用无 `/dataService/webapi` 前缀的路径上报。接收器兼容有无此前缀的路径，并保存原文；现在按 `AssetsCode` 将四台设备分别转发到 S1。
 
 ## 检查请求日志

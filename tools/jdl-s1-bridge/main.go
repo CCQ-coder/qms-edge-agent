@@ -205,10 +205,6 @@ func newBridge(c config) (*bridge, error) {
 		if err != nil {
 			return nil, fmt.Errorf("allowed_cidrs: %w", err)
 		}
-		ones, _ := network.Mask.Size()
-		if ones == 0 {
-			return nil, errors.New("allowed_cidrs cannot allow the entire internet")
-		}
 		b.allowed = append(b.allowed, network)
 	}
 	return b, nil
