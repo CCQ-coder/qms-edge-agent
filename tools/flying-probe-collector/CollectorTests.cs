@@ -75,6 +75,7 @@ internal static class CollectorTests
             Run("RejectCorruptStores", RejectCorruptStores);
             Run("FailedWriteKeepsMemory", FailedWriteKeepsMemory);
             Run("UntestedPlaceholderIsSkippedAndLaterResultQueued", UntestedPlaceholderIsSkippedAndLaterResultQueued);
+            Run("FileWithoutCountersIsSkippedAndLaterResultQueued", FileWithoutCountersIsSkippedAndLaterResultQueued);
             Run("FirstScanWaitsForStability", FirstScanWaitsForStability);
             Run("UpdatesCreateOneNewEvent", UpdatesCreateOneNewEvent);
             Run("IgnoreNestedAndNonTxt", IgnoreNestedAndNonTxt);
@@ -435,6 +436,33 @@ internal static class CollectorTests
             scanner.ScanOnce();
             Assert(queue.Snapshot().Count == 1 && !scanner.LastScanHadError,
                 "first real test is still queued after placeholder");
+        });
+    }
+
+    private static void FileWithoutCountersIsSkippedAndLaterResultQueued()
+    {
+        InTempDirectory(delegate(string directory)
+        {
+            string root = Path.Combine(directory, "source");
+            string device = Path.Combine(root, "FPT-01");
+            Directory.CreateDirectory(device);
+            string file = Path.Combine(device, "MAT-1.txt");
+            File.WriteAllText(file, "Machine=FPT-01\r\nMaterial=MAT-1");
+            PendingEventStore queue = new PendingEventStore(Path.Combine(directory, "pending.json"));
+            List<string> messages = new List<string>();
+            ProbeScanner scanner = new ProbeScanner(root, queue,
+                new ScanCheckpointStore(Path.Combine(directory, "scan.json")), messages.Add);
+            scanner.ScanOnce();
+            scanner.ScanOnce();
+            Assert(!scanner.LastScanHadError && queue.Snapshot().Count == 0 && messages.Count == 0,
+                "non-result file is ignored without a false scan alarm");
+
+            File.WriteAllText(file, "Test_Counters 1 1 0 00:00:30");
+            File.SetLastWriteTime(file, DateTime.Now.AddMinutes(1));
+            scanner.ScanOnce();
+            scanner.ScanOnce();
+            Assert(queue.Snapshot().Count == 1 && !scanner.LastScanHadError,
+                "first valid result is queued after non-result content");
         });
     }
 
