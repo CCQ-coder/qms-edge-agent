@@ -430,8 +430,15 @@ internal static class CollectorTests
             Assert(!scanner.LastScanHadError && queue.Snapshot().Count == 0 && messages.Count == 0,
                 "untested placeholder neither fails nor enters QMS queue");
 
-            File.WriteAllText(file, "Test_Counters 1 1 0 00:00:30");
+            File.WriteAllText(file, "Test_Counters 0 0 0 00:13:36");
             File.SetLastWriteTime(file, DateTime.Now.AddMinutes(1));
+            scanner.ScanOnce();
+            scanner.ScanOnce();
+            Assert(queue.Snapshot().Count == 0,
+                "zero-count result with elapsed time does not enter QMS queue");
+
+            File.WriteAllText(file, "Test_Counters 1 1 0 00:00:30");
+            File.SetLastWriteTime(file, DateTime.Now.AddMinutes(2));
             scanner.ScanOnce();
             scanner.ScanOnce();
             Assert(queue.Snapshot().Count == 1 && !scanner.LastScanHadError,
