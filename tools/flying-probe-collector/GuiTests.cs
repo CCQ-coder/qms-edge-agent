@@ -289,13 +289,18 @@ internal static class GuiTests
             {
                 try
                 {
-                    using (TcpClient client = listener.AcceptTcpClient())
-                    using (NetworkStream stream = client.GetStream())
+                    while (true)
                     {
-                        connected.Set();
-                        release.WaitOne(5000);
-                        byte[] response = System.Text.Encoding.ASCII.GetBytes("HTTP/1.1 204 No Content\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
-                        stream.Write(response, 0, response.Length);
+                        using (TcpClient client = listener.AcceptTcpClient())
+                        using (NetworkStream stream = client.GetStream())
+                        {
+                            string firstLine = new StreamReader(stream, System.Text.Encoding.UTF8).ReadLine();
+                            bool host = firstLine.Contains("/api/v1/gateway/host-status");
+                            if (!host) { connected.Set(); release.WaitOne(5000); }
+                            byte[] response = System.Text.Encoding.ASCII.GetBytes("HTTP/1.1 204 No Content\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+                            stream.Write(response, 0, response.Length);
+                            if (!host) return;
+                        }
                     }
                 }
                 catch (SocketException) { }

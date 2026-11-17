@@ -9,24 +9,73 @@ using System.Net.Sockets;
 using System.Reflection;
 using System.Text;
 using System.Threading;
+using System.Threading.Tasks;
 using System.Web.Script.Serialization;
 
 internal static class CollectorTests
 {
     private static int passed;
 
-    private static int Main()
+    private static int Main(string[] args)
     {
         try
         {
+            if (args.Length == 1 && args[0] == "--host-status")
+            {
+                Run("CpuPercentFromCounters", CpuPercentFromCounters);
+                if (Environment.OSVersion.Platform == PlatformID.Win32NT) Run("CaptureHostStatusOnWindows", CaptureHostStatusOnWindows);
+                else Console.WriteLine("SKIP CaptureHostStatusOnWindows (requires Windows)");
+                return 0;
+            }
+            if (args.Length == 1 && args[0] == "--host-sender")
+            {
+                Run("HostStatusPost", HostStatusPost);
+                Run("HostStatusPostFailures", HostStatusPostFailures);
+                return 0;
+            }
+            if (args.Length == 1 && args[0] == "--relay")
+            {
+                Run("RelayForwardsTwoDeviceIds", RelayForwardsTwoDeviceIds);
+                Run("RelayDoesNotOverwriteListenerIdentity", RelayDoesNotOverwriteListenerIdentity);
+                Run("RelayRejectsInvalidSnapshotAndContinues", RelayRejectsInvalidSnapshotAndContinues);
+                Run("RelayDoesNotResendAfterRestart", RelayDoesNotResendAfterRestart);
+                Run("RelayRetriesAfterSendFailure", RelayRetriesAfterSendFailure);
+                Run("RelayFailureDoesNotStopTxtDelivery", RelayFailureDoesNotStopTxtDelivery);
+                return 0;
+            }
+            if (args.Length == 1 && args[0] == "--http")
+            {
+                Run("AcceptedPostRemovesEvent", AcceptedPostRemovesEvent);
+                Run("RejectOneContinueNext", RejectOneContinueNext);
+                Run("NetworkFailureRetains", NetworkFailureRetains);
+                Run("RedirectRetainsEvent", RedirectRetainsEvent);
+                Run("NoBearerWhenEmpty", NoBearerWhenEmpty);
+                Run("SlowResponseHonorsOverallTimeout", SlowResponseHonorsOverallTimeout);
+                Run("HostStatusPost", HostStatusPost);
+                Run("HostStatusPostFailures", HostStatusPostFailures);
+                return 0;
+            }
+            if (args.Length == 1 && args[0] == "--runtime-host")
+            {
+                Run("HostWorkerRecoversAndStops", HostWorkerRecoversAndStops);
+                Run("RuntimeHostFailureDoesNotBlockTxt", RuntimeHostFailureDoesNotBlockTxt);
+                Run("StopWaitsForHostRequest", StopWaitsForHostRequest);
+                Run("FatalTxtWorkerStopsHostWorker", FatalTxtWorkerStopsHostWorker);
+                return 0;
+            }
             Run("ParseSample", ParseSample);
             Run("RejectMalformed", RejectMalformed);
             Run("MapEvent", MapEvent);
+            Run("CpuPercentFromCounters", CpuPercentFromCounters);
+            if (Environment.OSVersion.Platform == PlatformID.Win32NT) Run("CaptureHostStatusOnWindows", CaptureHostStatusOnWindows);
+            else Console.WriteLine("SKIP CaptureHostStatusOnWindows (requires Windows)");
             Run("RecoverPending", RecoverPending);
             Run("RecoverCheckpoint", RecoverCheckpoint);
             Run("RecoverLargeStores", RecoverLargeStores);
             Run("RejectCorruptStores", RejectCorruptStores);
             Run("FailedWriteKeepsMemory", FailedWriteKeepsMemory);
+            Run("UntestedPlaceholderIsSkippedAndLaterResultQueued", UntestedPlaceholderIsSkippedAndLaterResultQueued);
+            Run("FileWithoutCountersIsSkippedAndLaterResultQueued", FileWithoutCountersIsSkippedAndLaterResultQueued);
             Run("FirstScanWaitsForStability", FirstScanWaitsForStability);
             Run("UpdatesCreateOneNewEvent", UpdatesCreateOneNewEvent);
             Run("IgnoreNestedAndNonTxt", IgnoreNestedAndNonTxt);
@@ -38,6 +87,14 @@ internal static class CollectorTests
             Run("NetworkFailureRetains", NetworkFailureRetains);
             Run("RedirectRetainsEvent", RedirectRetainsEvent);
             Run("NoBearerWhenEmpty", NoBearerWhenEmpty);
+            Run("HostStatusPost", HostStatusPost);
+            Run("HostStatusPostFailures", HostStatusPostFailures);
+            Run("RelayForwardsTwoDeviceIds", RelayForwardsTwoDeviceIds);
+            Run("RelayDoesNotOverwriteListenerIdentity", RelayDoesNotOverwriteListenerIdentity);
+            Run("RelayRejectsInvalidSnapshotAndContinues", RelayRejectsInvalidSnapshotAndContinues);
+            Run("RelayDoesNotResendAfterRestart", RelayDoesNotResendAfterRestart);
+            Run("RelayRetriesAfterSendFailure", RelayRetriesAfterSendFailure);
+            Run("RelayFailureDoesNotStopTxtDelivery", RelayFailureDoesNotStopTxtDelivery);
             Run("LoadSettingsRelativeToIni", LoadSettingsRelativeToIni);
             Run("HistorySurvivesRestart", HistorySurvivesRestart);
             Run("HistoryReadShowsUtcPlusEight", HistoryReadShowsUtcPlusEight);
@@ -45,6 +102,10 @@ internal static class CollectorTests
             Run("AcceptedWithoutHistoryStaysQueued", AcceptedWithoutHistoryStaysQueued);
             Run("HistoryNeverContainsTokens", HistoryNeverContainsTokens);
             Run("RuntimeStartStopReleasesLock", RuntimeStartStopReleasesLock);
+            Run("HostWorkerRecoversAndStops", HostWorkerRecoversAndStops);
+            Run("RuntimeHostFailureDoesNotBlockTxt", RuntimeHostFailureDoesNotBlockTxt);
+            Run("StopWaitsForHostRequest", StopWaitsForHostRequest);
+            Run("FatalTxtWorkerStopsHostWorker", FatalTxtWorkerStopsHostWorker);
             Run("StopDuringScanKeepsUnprocessedFiles", StopDuringScanKeepsUnprocessedFiles);
             Run("StopDoesNotSendNextPendingEvent", StopDoesNotSendNextPendingEvent);
             Run("SlowResponseHonorsOverallTimeout", SlowResponseHonorsOverallTimeout);
@@ -97,6 +158,7 @@ internal static class CollectorTests
             "Test_Counters 2147483648 2 0 01:27:09",
             "Test_Counters 2 2 0 01:60:09",
             "Test_Counters 2 2 0 01:27:60",
+            "Test_Counters 1 0 1 0:00",
             "Test_Counters_extra 2 2 0 01:27:09"
         };
         foreach (string value in invalid)
@@ -136,6 +198,26 @@ internal static class CollectorTests
     {
         object item;
         return value.TryGetValue(key, out item) ? item as string : null;
+    }
+
+    private static void CpuPercentFromCounters()
+    {
+        CpuTimes first = new CpuTimes(100, 200, 100);
+        Assert(!HostStatusSampler.CalculateCpuPercent(null, first).HasValue, "first CPU sample has no rate");
+        Assert(HostStatusSampler.CalculateCpuPercent(first, new CpuTimes(120, 260, 140)) == 80.0, "CPU busy delta");
+        Assert(HostStatusSampler.CalculateCpuPercent(first, first) == null, "zero delta has no rate");
+        Assert(HostStatusSampler.CalculateCpuPercent(first, new CpuTimes(90, 190, 90)) == null, "counter reset has no rate");
+        Assert(HostStatusSampler.CalculateCpuPercent(first, new CpuTimes(170, 260, 140)) == 30.0, "idle included in kernel");
+    }
+
+    private static void CaptureHostStatusOnWindows()
+    {
+        HostStatusSample sample = new HostStatusSampler().Capture();
+        Assert(!string.IsNullOrWhiteSpace(sample.HostName), "host name");
+        Assert(sample.SampledAtUtc.Kind == DateTimeKind.Utc, "UTC sample time");
+        Assert(sample.MemoryTotalBytes > 0 && sample.MemoryAvailableBytes <= sample.MemoryTotalBytes, "physical memory");
+        Assert(sample.SystemDiskTotalBytes > 0 && sample.SystemDiskFreeBytes <= sample.SystemDiskTotalBytes, "system disk");
+        Assert(sample.UptimeSeconds >= 0, "uptime");
     }
 
     private static void RecoverPending()
@@ -330,6 +412,67 @@ internal static class CollectorTests
         });
     }
 
+    private static void UntestedPlaceholderIsSkippedAndLaterResultQueued()
+    {
+        InTempDirectory(delegate(string directory)
+        {
+            string root = Path.Combine(directory, "source");
+            string device = Path.Combine(root, "FPT-01");
+            Directory.CreateDirectory(device);
+            string file = Path.Combine(device, "MAT-1.txt");
+            File.WriteAllText(file, "Test_Counters 0 0 0 0:00");
+            PendingEventStore queue = new PendingEventStore(Path.Combine(directory, "pending.json"));
+            List<string> messages = new List<string>();
+            ProbeScanner scanner = new ProbeScanner(root, queue,
+                new ScanCheckpointStore(Path.Combine(directory, "scan.json")), messages.Add);
+            scanner.ScanOnce();
+            scanner.ScanOnce();
+            Assert(!scanner.LastScanHadError && queue.Snapshot().Count == 0 && messages.Count == 0,
+                "untested placeholder neither fails nor enters QMS queue");
+
+            File.WriteAllText(file, "Test_Counters 0 0 0 00:13:36");
+            File.SetLastWriteTime(file, DateTime.Now.AddMinutes(1));
+            scanner.ScanOnce();
+            scanner.ScanOnce();
+            Assert(queue.Snapshot().Count == 0,
+                "zero-count result with elapsed time does not enter QMS queue");
+
+            File.WriteAllText(file, "Test_Counters 1 1 0 00:00:30");
+            File.SetLastWriteTime(file, DateTime.Now.AddMinutes(2));
+            scanner.ScanOnce();
+            scanner.ScanOnce();
+            Assert(queue.Snapshot().Count == 1 && !scanner.LastScanHadError,
+                "first real test is still queued after placeholder");
+        });
+    }
+
+    private static void FileWithoutCountersIsSkippedAndLaterResultQueued()
+    {
+        InTempDirectory(delegate(string directory)
+        {
+            string root = Path.Combine(directory, "source");
+            string device = Path.Combine(root, "FPT-01");
+            Directory.CreateDirectory(device);
+            string file = Path.Combine(device, "MAT-1.txt");
+            File.WriteAllText(file, "Machine=FPT-01\r\nMaterial=MAT-1");
+            PendingEventStore queue = new PendingEventStore(Path.Combine(directory, "pending.json"));
+            List<string> messages = new List<string>();
+            ProbeScanner scanner = new ProbeScanner(root, queue,
+                new ScanCheckpointStore(Path.Combine(directory, "scan.json")), messages.Add);
+            scanner.ScanOnce();
+            scanner.ScanOnce();
+            Assert(!scanner.LastScanHadError && queue.Snapshot().Count == 0 && messages.Count == 0,
+                "non-result file is ignored without a false scan alarm");
+
+            File.WriteAllText(file, "Test_Counters 1 1 0 00:00:30");
+            File.SetLastWriteTime(file, DateTime.Now.AddMinutes(1));
+            scanner.ScanOnce();
+            scanner.ScanOnce();
+            Assert(queue.Snapshot().Count == 1 && !scanner.LastScanHadError,
+                "first valid result is queued after non-result content");
+        });
+    }
+
     private static void MetadataChangedAfterRead()
     {
         InTempDirectory(delegate(string directory)
@@ -456,6 +599,192 @@ internal static class CollectorTests
                 new QmsSender(server.BaseUrl, "gateway-secret", "", 2, queue, delegate(string message) { }).SendPending();
                 server.WaitForRequests();
                 Assert(!server.Requests[0].Headers.ContainsKey("Authorization"), "blank bearer omits Authorization");
+            }
+        });
+    }
+
+    private static HostStatusSample ExampleHostStatus()
+    {
+        return new HostStatusSample("SCBGX", new DateTime(2026, 10, 22, 10, 0, 0, DateTimeKind.Utc),
+            12.5, 17179869184, 8589934592, 512110190592, 171798691840, 3600);
+    }
+
+    private static void HostStatusPost()
+    {
+        using (HttpFixture server = HttpFixture.HostOnly(204))
+        {
+            HostStatusSender sender = new HostStatusSender(server.BaseUrl, "gateway-secret", "bearer-secret", 2,
+                delegate(string message) { });
+            Assert(sender.Send(ExampleHostStatus()), "host status accepted");
+            server.WaitForRequests();
+            CapturedRequest request = server.Requests[0];
+            Assert(request.FirstLine == "POST /api/v1/gateway/host-status HTTP/1.1", "host status endpoint");
+            Assert(request.Headers["X-Gateway-Token"] == "gateway-secret", "host gateway token");
+            Assert(request.Headers["Authorization"] == "Bearer bearer-secret", "host bearer token");
+            Dictionary<string, object> body = new JavaScriptSerializer().DeserializeObject(request.Body) as Dictionary<string, object>;
+            Assert(Text(body, "hostName") == "SCBGX", "host name payload");
+            Assert(DateTime.Parse(Text(body, "sampledAt"), CultureInfo.InvariantCulture,
+                DateTimeStyles.AdjustToUniversal) == ExampleHostStatus().SampledAtUtc, "UTC sample time payload");
+            Assert(Convert.ToDouble(body["cpuPercent"], CultureInfo.InvariantCulture) == 12.5, "CPU payload");
+            Assert(Convert.ToInt64(body["memoryTotalBytes"], CultureInfo.InvariantCulture) == 17179869184, "memory bytes payload");
+            Assert(Convert.ToInt64(body["systemDiskFreeBytes"], CultureInfo.InvariantCulture) == 171798691840, "disk bytes payload");
+            Assert(Convert.ToInt64(body["uptimeSeconds"], CultureInfo.InvariantCulture) == 3600, "uptime seconds payload");
+        }
+    }
+
+    private static void HostStatusPostFailures()
+    {
+        List<string> messages = new List<string>();
+        using (HttpFixture login = new HttpFixture(200))
+        using (HttpFixture server = HttpFixture.HostOnly(302))
+        {
+            server.RedirectLocation = login.BaseUrl + "/login";
+            HostStatusSender sender = new HostStatusSender(server.BaseUrl, "gateway-secret", "", 2, messages.Add);
+            Assert(!sender.Send(ExampleHostStatus()), "redirect is a failure");
+            server.WaitForRequests();
+            Assert(login.Requests.Count == 0, "host status does not follow redirect");
+            Assert(!server.Requests[0].Headers.ContainsKey("Authorization"), "blank host bearer omitted");
+        }
+        HostStatusSender unreachable = new HostStatusSender("http://127.0.0.1:1", "gateway-secret", "bearer-secret", 1, messages.Add);
+        Assert(!unreachable.Send(ExampleHostStatus()), "network failure is reported");
+        Assert(messages.Count == 2 && !string.Join(" ", messages.ToArray()).Contains("gateway-secret")
+            && !string.Join(" ", messages.ToArray()).Contains("bearer-secret"), "host failure logs hide credentials");
+    }
+
+    private static string StatusJson(string deviceId)
+    {
+        return "{\"schemaVersion\":1,\"deviceId\":\"" + deviceId + "\",\"sampledAt\":\"2026-10-22T10:00:00+00:00\"," +
+            "\"cpuPercent\":12.5,\"memoryTotalBytes\":100,\"memoryAvailableBytes\":40," +
+            "\"systemDiskTotalBytes\":1000,\"systemDiskFreeBytes\":500,\"uptimeSeconds\":60}";
+    }
+
+    private static void WriteStatus(string root, string deviceId, string content)
+    {
+        string directory = Path.Combine(root, deviceId);
+        Directory.CreateDirectory(directory);
+        File.WriteAllText(Path.Combine(directory, "host-status.json"), content, new UTF8Encoding(false));
+    }
+
+    private static void RelayForwardsTwoDeviceIds()
+    {
+        InTempDirectory(delegate(string directory)
+        {
+            string source = Path.Combine(directory, "source");
+            WriteStatus(source, "FPT-01", StatusJson("FPT-01"));
+            WriteStatus(source, "FPT-02", StatusJson("FPT-02"));
+            List<string> names = new List<string>();
+            new HostStatusRelay(source, Path.Combine(directory, "host-checkpoints.json"), delegate(HostStatusSample sample)
+            {
+                names.Add(sample.HostName);
+                return true;
+            }, delegate(string message) { }).ForwardOnce(delegate { return false; });
+            names.Sort(StringComparer.Ordinal);
+            Assert(names.Count == 2 && names[0] == "FPT-01" && names[1] == "FPT-02", "relay uses each configured device ID");
+        });
+    }
+
+    private static void RelayDoesNotOverwriteListenerIdentity()
+    {
+        InTempDirectory(delegate(string directory)
+        {
+            string source = Path.Combine(directory, "source");
+            WriteStatus(source, Environment.MachineName, StatusJson(Environment.MachineName));
+            int sends = 0;
+            new HostStatusRelay(source, Path.Combine(directory, "host-checkpoints.json"), delegate(HostStatusSample sample)
+            { sends++; return true; }, delegate(string message) { }).ForwardOnce(delegate { return false; });
+            Assert(sends == 0, "device snapshot cannot overwrite listener computer status");
+        });
+    }
+
+    private static void RelayRejectsInvalidSnapshotAndContinues()
+    {
+        string valid = StatusJson("BAD");
+        string[] invalid = {
+            valid.Replace("\"schemaVersion\":1,", ""),
+            valid.Replace("\"schemaVersion\":1", "\"schemaVersion\":2"),
+            valid.Replace("\"deviceId\":\"BAD\"", "\"deviceId\":\"OTHER\""),
+            valid + new string(' ', 4096),
+            valid.Replace("2026-10-22T10:00:00+00:00", "not-a-time"),
+            valid.Replace("\"cpuPercent\":12.5", "\"cpuPercent\":101"),
+            valid.Replace("\"memoryTotalBytes\":100", "\"memoryTotalBytes\":0"),
+            valid.Replace("\"memoryAvailableBytes\":40", "\"memoryAvailableBytes\":101"),
+            valid.Replace("\"systemDiskFreeBytes\":500", "\"systemDiskFreeBytes\":1001"),
+            valid.Replace("\"uptimeSeconds\":60", "\"uptimeSeconds\":-1"),
+            "{"
+        };
+        foreach (string payload in invalid)
+        {
+            InTempDirectory(delegate(string directory)
+            {
+                string source = Path.Combine(directory, "source");
+                WriteStatus(source, "BAD", payload);
+                WriteStatus(source, "GOOD", StatusJson("GOOD"));
+                List<string> names = new List<string>();
+                new HostStatusRelay(source, Path.Combine(directory, "host-checkpoints.json"), delegate(HostStatusSample sample)
+                {
+                    names.Add(sample.HostName);
+                    return true;
+                }, delegate(string message) { }).ForwardOnce(delegate { return false; });
+                Assert(names.Count == 1 && names[0] == "GOOD", "bad snapshot must not block a good neighbor");
+            });
+        }
+    }
+
+    private static void RelayDoesNotResendAfterRestart()
+    {
+        InTempDirectory(delegate(string directory)
+        {
+            string source = Path.Combine(directory, "source");
+            string checkpoint = Path.Combine(directory, "host-checkpoints.json");
+            WriteStatus(source, "FPT-01", StatusJson("FPT-01"));
+            int sends = 0;
+            Func<HostStatusSample, bool> send = delegate(HostStatusSample sample) { sends++; return true; };
+            new HostStatusRelay(source, checkpoint, send, delegate(string message) { }).ForwardOnce(delegate { return false; });
+            new HostStatusRelay(source, checkpoint, send, delegate(string message) { }).ForwardOnce(delegate { return false; });
+            Assert(sends == 1, "restarted relay skips an unchanged successful snapshot");
+            WriteStatus(source, "FPT-01", StatusJson("FPT-01").Replace("10:00:00", "10:01:00"));
+            new HostStatusRelay(source, checkpoint, send, delegate(string message) { }).ForwardOnce(delegate { return false; });
+            Assert(sends == 2, "new sampledAt forwards a new snapshot");
+        });
+    }
+
+    private static void RelayRetriesAfterSendFailure()
+    {
+        InTempDirectory(delegate(string directory)
+        {
+            string source = Path.Combine(directory, "source");
+            WriteStatus(source, "FPT-01", StatusJson("FPT-01"));
+            int attempts = 0;
+            HostStatusRelay relay = new HostStatusRelay(source, Path.Combine(directory, "host-checkpoints.json"),
+                delegate(HostStatusSample sample) { attempts++; return attempts > 1; }, delegate(string message) { });
+            relay.ForwardOnce(delegate { return false; });
+            relay.ForwardOnce(delegate { return false; });
+            relay.ForwardOnce(delegate { return false; });
+            Assert(attempts == 2, "failed send retries once then persists success");
+        });
+    }
+
+    private static void RelayFailureDoesNotStopTxtDelivery()
+    {
+        InTempDirectory(delegate(string directory)
+        {
+            using (HttpFixture server = new HttpFixture(204))
+            {
+                server.HostStatusCode = 500;
+                server.ExpectedHostRequests = 2;
+                Settings settings = RuntimeSettings(directory, server.BaseUrl);
+                WriteStatus(settings.SourceRoot, "FPT-01", StatusJson("FPT-01"));
+                new PendingEventStore(settings.QueueFile).Enqueue(EventWithRecord("R-relay-independent"));
+                CollectorRuntime runtime = new CollectorRuntime(settings, delegate(string message) { }, null, null, null,
+                    ExampleHostStatus);
+                runtime.Start();
+                server.WaitForRequests();
+                Assert(runtime.StopAsync().Wait(5000), "runtime stops after relay and TXT delivery");
+                Assert(new PendingEventStore(settings.QueueFile).Snapshot().Count == 0,
+                    "TXT event succeeds while relay HTTP returns 500");
+                int deviceRequests = server.Requests.FindAll(delegate(CapturedRequest request)
+                { return request.Body.Contains("\"hostName\":\"FPT-01\""); }).Count;
+                Assert(deviceRequests == 1, "device status attempted separately");
             }
         });
     }
@@ -594,6 +923,112 @@ internal static class CollectorTests
         });
     }
 
+    private static void HostWorkerRecoversAndStops()
+    {
+        using (ManualResetEvent stop = new ManualResetEvent(false))
+        using (ManualResetEvent repeated = new ManualResetEvent(false))
+        {
+            int ticks = 0;
+            List<string> errors = new List<string>();
+            Task task = Task.Factory.StartNew(delegate
+            {
+                HostStatusWorker.Run(stop, TimeSpan.FromMilliseconds(20), delegate
+                {
+                    if (Interlocked.Increment(ref ticks) == 1) throw new IOException("sample failed");
+                    repeated.Set();
+                }, errors.Add);
+            });
+            Assert(repeated.WaitOne(2000), "host worker retries after sampling error");
+            stop.Set();
+            Assert(task.Wait(2000), "host worker stops promptly");
+            Assert(ticks >= 2 && errors.Count == 1 && errors[0].Contains("IOException"), "host worker logs safe error class");
+        }
+    }
+
+    private static void RuntimeHostFailureDoesNotBlockTxt()
+    {
+        InTempDirectory(delegate(string directory)
+        {
+            using (HttpFixture server = new HttpFixture(204))
+            {
+                server.HostStatusCode = 500;
+                server.ExpectedHostRequests = 1;
+                Settings settings = RuntimeSettings(directory, server.BaseUrl);
+                new PendingEventStore(settings.QueueFile).Enqueue(EventWithRecord("R-host-independent"));
+                List<string> messages = new List<string>();
+                CollectorRuntime runtime = new CollectorRuntime(settings, messages.Add, null, null, null,
+                    ExampleHostStatus);
+                runtime.Start();
+                server.WaitForRequests();
+                Assert(runtime.StopAsync().Wait(5000), "runtime stops after both requests");
+                Assert(new PendingEventStore(settings.QueueFile).Snapshot().Count == 0, "TXT event succeeds after host HTTP failure");
+                Assert(server.Requests.Exists(delegate(CapturedRequest request)
+                { return request.FirstLine.Contains("/api/v1/gateway/host-status"); }), "host status posted immediately");
+                Assert(messages.Exists(delegate(string message) { return message.Contains("Host status delivery failed: HTTP 500"); }),
+                    "host failure logged separately");
+            }
+        });
+    }
+
+    private static void StopWaitsForHostRequest()
+    {
+        InTempDirectory(delegate(string directory)
+        {
+            TcpListener listener = new TcpListener(IPAddress.Loopback, 0);
+            listener.Start();
+            using (ManualResetEvent connected = new ManualResetEvent(false))
+            using (ManualResetEvent release = new ManualResetEvent(false))
+            {
+                Thread server = new Thread(delegate()
+                {
+                    try
+                    {
+                        using (TcpClient client = listener.AcceptTcpClient())
+                        using (NetworkStream stream = client.GetStream())
+                        {
+                            connected.Set();
+                            release.WaitOne(5000);
+                            byte[] response = Encoding.ASCII.GetBytes("HTTP/1.1 204 No Content\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+                            stream.Write(response, 0, response.Length);
+                        }
+                    }
+                    catch (SocketException) { }
+                    catch (IOException) { }
+                });
+                server.IsBackground = true;
+                server.Start();
+                try
+                {
+                    string url = "http://127.0.0.1:" + ((IPEndPoint)listener.LocalEndpoint).Port;
+                    CollectorRuntime runtime = new CollectorRuntime(RuntimeSettings(directory, url),
+                        delegate(string message) { }, null, null, null, ExampleHostStatus);
+                    runtime.Start();
+                    Assert(connected.WaitOne(5000), "host request started");
+                    Task stopping = runtime.StopAsync();
+                    Assert(!stopping.IsCompleted, "stop waits for in-flight host request");
+                    release.Set();
+                    Assert(stopping.Wait(5000), "stop finishes after host request");
+                }
+                finally { release.Set(); listener.Stop(); server.Join(1000); }
+            }
+        });
+    }
+
+    private static void FatalTxtWorkerStopsHostWorker()
+    {
+        InTempDirectory(delegate(string directory)
+        {
+            Settings settings = RuntimeSettings(directory, "http://127.0.0.1:1");
+            CollectorRuntime runtime = new CollectorRuntime(settings, delegate(string message) { }, null,
+                delegate(int count) { throw new InvalidOperationException("display failed"); }, null, ExampleHostStatus);
+            runtime.Start();
+            try { runtime.Completion.Wait(5000); }
+            catch (AggregateException) { }
+            Assert(runtime.Completion.IsCompleted && runtime.Completion.IsFaulted, "fatal TXT worker ends whole runtime");
+            using (new CollectorOwnership(settings.QueueFile)) { }
+        });
+    }
+
     private static void StopDuringScanKeepsUnprocessedFiles()
     {
         InTempDirectory(delegate(string directory)
@@ -629,6 +1064,7 @@ internal static class CollectorTests
             using (HttpFixture server = new HttpFixture(204))
             {
                 Settings settings = RuntimeSettings(directory, server.BaseUrl);
+                settings.RequestTimeoutSeconds = 1;
                 PendingEventStore queue = new PendingEventStore(settings.QueueFile);
                 queue.Enqueue(EventWithRecord("R-1"));
                 queue.Enqueue(EventWithRecord("R-2"));
@@ -918,11 +1354,25 @@ internal static class CollectorTests
         private Exception failure;
         public string BaseUrl { get; private set; }
         public string RedirectLocation { get; set; }
+        public int HostStatusCode { get; set; }
+        public int ExpectedHostRequests { get; set; }
         public List<CapturedRequest> Requests { get { return requests; } }
 
         public HttpFixture(params int[] statuses)
+            : this(statuses, 204, 0)
+        {
+        }
+
+        public static HttpFixture HostOnly(int status)
+        {
+            return new HttpFixture(new int[0], status, 1);
+        }
+
+        private HttpFixture(int[] statuses, int hostStatusCode, int expectedHostRequests)
         {
             this.statuses = statuses;
+            HostStatusCode = hostStatusCode;
+            ExpectedHostRequests = expectedHostRequests;
             listener = new TcpListener(IPAddress.Loopback, 0);
             listener.Start();
             BaseUrl = "http://127.0.0.1:" + ((IPEndPoint)listener.LocalEndpoint).Port.ToString(CultureInfo.InvariantCulture);
@@ -936,14 +1386,20 @@ internal static class CollectorTests
             if (!thread.Join(5000)) throw new Exception("HTTP fixture timed out; captured=" + requests.Count.ToString(CultureInfo.InvariantCulture) +
                 "; failure=" + (failure == null ? "none" : failure.ToString()));
             if (failure != null) throw new Exception("HTTP fixture failed", failure);
-            Assert(requests.Count == statuses.Length, "expected HTTP request count");
+            int telemetryCount = requests.FindAll(delegate(CapturedRequest request)
+            { return !request.FirstLine.Contains("/api/v1/gateway/host-status"); }).Count;
+            int hostCount = requests.Count - telemetryCount;
+            Assert(telemetryCount == statuses.Length && hostCount >= ExpectedHostRequests,
+                "expected HTTP request count");
         }
 
         private void Run()
         {
             try
             {
-                foreach (int status in statuses)
+                int telemetryIndex = 0;
+                int hostCount = 0;
+                while (telemetryIndex < statuses.Length || hostCount < ExpectedHostRequests)
                 {
                     using (TcpClient client = listener.AcceptTcpClient())
                     using (NetworkStream stream = client.GetStream())
@@ -973,6 +1429,10 @@ internal static class CollectorTests
                         }
                         request.Body = new string(body);
                         requests.Add(request);
+                        bool host = request.FirstLine.Contains("/api/v1/gateway/host-status");
+                        int status = host ? HostStatusCode : statuses[telemetryIndex];
+                        if (host) hostCount++;
+                        else telemetryIndex++;
                         string location = status >= 300 && status < 400 && RedirectLocation != null ?
                             "Location: " + RedirectLocation + "\r\n" : "";
                         byte[] response = Encoding.ASCII.GetBytes("HTTP/1.1 " + status.ToString(CultureInfo.InvariantCulture) +

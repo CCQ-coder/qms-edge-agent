@@ -103,7 +103,9 @@ internal sealed class ProbeScanner
 
         string content = File.ReadAllText(file, Encoding.UTF8);
         if (!MetadataUnchanged(info, stamp.Length, stamp.LastWriteUtc)) return;
+        if (content.IndexOf("Test_Counters", StringComparison.Ordinal) < 0) return;
         ProbeCounters counters = ProbeRecords.Parse(content);
+        if (counters.Tested == 0 && counters.Good == 0 && counters.Bad == 0) return;
         string machine = Path.GetFileName(directory);
         string material = Path.GetFileNameWithoutExtension(file);
         string relativePath = machine + "/" + Path.GetFileName(file);
