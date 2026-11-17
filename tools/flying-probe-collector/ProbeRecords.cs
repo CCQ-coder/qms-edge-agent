@@ -44,7 +44,8 @@ internal static class ProbeRecords
                 if (!int.TryParse(values[1], NumberStyles.None, CultureInfo.InvariantCulture, out tested) ||
                     !int.TryParse(values[2], NumberStyles.None, CultureInfo.InvariantCulture, out good) ||
                     !int.TryParse(values[3], NumberStyles.None, CultureInfo.InvariantCulture, out bad) ||
-                    !LastTestTimePattern.IsMatch(values[4]))
+                    !(LastTestTimePattern.IsMatch(values[4]) ||
+                      (tested == 0 && good == 0 && bad == 0 && values[4] == "0:00")))
                 {
                     throw new FormatException("Test_Counters contains an invalid count or time.");
                 }

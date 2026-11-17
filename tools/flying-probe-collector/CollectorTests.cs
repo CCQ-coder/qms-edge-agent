@@ -74,6 +74,7 @@ internal static class CollectorTests
             Run("RecoverLargeStores", RecoverLargeStores);
             Run("RejectCorruptStores", RejectCorruptStores);
             Run("FailedWriteKeepsMemory", FailedWriteKeepsMemory);
+            Run("UntestedPlaceholderIsSkippedAndLaterResultQueued", UntestedPlaceholderIsSkippedAndLaterResultQueued);
             Run("FirstScanWaitsForStability", FirstScanWaitsForStability);
             Run("UpdatesCreateOneNewEvent", UpdatesCreateOneNewEvent);
             Run("IgnoreNestedAndNonTxt", IgnoreNestedAndNonTxt);
@@ -156,6 +157,7 @@ internal static class CollectorTests
             "Test_Counters 2147483648 2 0 01:27:09",
             "Test_Counters 2 2 0 01:60:09",
             "Test_Counters 2 2 0 01:27:60",
+            "Test_Counters 1 0 1 0:00",
             "Test_Counters_extra 2 2 0 01:27:09"
         };
         foreach (string value in invalid)
@@ -406,6 +408,33 @@ internal static class CollectorTests
             Assert(queue.Snapshot().Count == 0, "change between scans not queued");
             scanner.ScanOnce();
             Assert(queue.Snapshot().Count == 1, "corrected stable file retried");
+        });
+    }
+
+    private static void UntestedPlaceholderIsSkippedAndLaterResultQueued()
+    {
+        InTempDirectory(delegate(string directory)
+        {
+            string root = Path.Combine(directory, "source");
+            string device = Path.Combine(root, "FPT-01");
+            Directory.CreateDirectory(device);
+            string file = Path.Combine(device, "MAT-1.txt");
+            File.WriteAllText(file, "Test_Counters 0 0 0 0:00");
+            PendingEventStore queue = new PendingEventStore(Path.Combine(directory, "pending.json"));
+            List<string> messages = new List<string>();
+            ProbeScanner scanner = new ProbeScanner(root, queue,
+                new ScanCheckpointStore(Path.Combine(directory, "scan.json")), messages.Add);
+            scanner.ScanOnce();
+            scanner.ScanOnce();
+            Assert(!scanner.LastScanHadError && queue.Snapshot().Count == 0 && messages.Count == 0,
+                "untested placeholder neither fails nor enters QMS queue");
+
+            File.WriteAllText(file, "Test_Counters 1 1 0 00:00:30");
+            File.SetLastWriteTime(file, DateTime.Now.AddMinutes(1));
+            scanner.ScanOnce();
+            scanner.ScanOnce();
+            Assert(queue.Snapshot().Count == 1 && !scanner.LastScanHadError,
+                "first real test is still queued after placeholder");
         });
     }
 
