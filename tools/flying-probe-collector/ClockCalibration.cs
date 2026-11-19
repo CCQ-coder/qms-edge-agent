@@ -80,7 +80,7 @@ internal sealed class ServerClockProbe
 
 internal static class HostStatusClock
 {
-    public static bool TryReadOffset(string deviceDirectory, string deviceId, DateTime qmsNowUtc,
+    public static bool TryReadOffset(string deviceDirectory, string deviceId, DateTime collectorNowUtc,
         TimeSpan localToQmsOffset, out int offsetSeconds)
     {
         offsetSeconds = 0;
@@ -108,10 +108,10 @@ internal static class HostStatusClock
             DateTimeOffset sampledAt;
             if (!DateTimeOffset.TryParse(raw, CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal, out sampledAt))
                 return false;
-            DateTime qmsWriteUtc = writeUtc.Add(localToQmsOffset);
-            TimeSpan age = qmsNowUtc - qmsWriteUtc;
+            DateTime qmsNowUtc = collectorNowUtc.Add(localToQmsOffset);
+            TimeSpan age = qmsNowUtc - writeUtc;
             if (age < TimeSpan.FromSeconds(-5) || age > TimeSpan.FromMinutes(3)) return false;
-            double seconds = (sampledAt.UtcDateTime - qmsWriteUtc).TotalSeconds;
+            double seconds = (sampledAt.UtcDateTime - writeUtc).TotalSeconds;
             if (Math.Abs(seconds) > 7200) return false;
             offsetSeconds = (int)Math.Round(seconds, MidpointRounding.AwayFromZero);
             return true;

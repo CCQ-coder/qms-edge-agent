@@ -100,7 +100,7 @@ internal sealed class ProbeScanner
                 {
                     int seconds;
                     string machineName = Path.GetFileName(directory);
-                    if (HostStatusClock.TryReadOffset(directory, machineName, DateTime.UtcNow.Add(qmsOffset.Value),
+                    if (HostStatusClock.TryReadOffset(directory, machineName, DateTime.UtcNow,
                         qmsOffset.Value, out seconds)) deviceOffset = seconds;
                 }
             }

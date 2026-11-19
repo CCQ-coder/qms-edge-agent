@@ -25,6 +25,7 @@ internal static class CollectorTests
             Run("ClockProbeMidpoint", ClockProbeMidpoint);
             Run("ClockProbeAuthenticatedRequest", ClockProbeAuthenticatedRequest);
             Run("StatusOffsetValidation", StatusOffsetValidation);
+            Run("CollectorClockSkewDoesNotDistortSharedTimestamp", CollectorClockSkewDoesNotDistortSharedTimestamp);
             Run("ScannerCorrectsDeviceClocks", ScannerCorrectsDeviceClocks);
             Run("InvalidStatusDoesNotBlockTxt", InvalidStatusDoesNotBlockTxt);
             Run("RecoverPending", RecoverPending);
@@ -185,23 +186,23 @@ internal static class CollectorTests
             DateTime now = new DateTime(2026, 11, 19, 1, 48, 30, DateTimeKind.Utc);
             DateTime sharedWrite = new DateTime(2026, 11, 19, 1, 47, 0, DateTimeKind.Utc);
             int offset;
-            WriteStatus(directory, "WTD-10", sharedWrite.AddMinutes(11), sharedWrite);
-            Assert(HostStatusClock.TryReadOffset(directory, "WTD-10", now, TimeSpan.FromMinutes(1), out offset)
+            WriteStatus(directory, "WTD-10", sharedWrite.AddMinutes(10), sharedWrite);
+            Assert(HostStatusClock.TryReadOffset(directory, "WTD-10", now, TimeSpan.Zero, out offset)
                 && offset == 600, "device clock ahead by ten minutes after QMS clock adjustment");
-            WriteStatus(directory, "WTD-10", sharedWrite.AddMinutes(-9), sharedWrite);
-            Assert(HostStatusClock.TryReadOffset(directory, "WTD-10", now, TimeSpan.FromMinutes(1), out offset)
+            WriteStatus(directory, "WTD-10", sharedWrite.AddMinutes(-10), sharedWrite);
+            Assert(HostStatusClock.TryReadOffset(directory, "WTD-10", now, TimeSpan.Zero, out offset)
                 && offset == -600, "device clock behind by ten minutes");
-            WriteStatus(directory, "WTD-7", sharedWrite.AddMinutes(11), sharedWrite);
-            Assert(!HostStatusClock.TryReadOffset(directory, "WTD-10", now, TimeSpan.FromMinutes(1), out offset),
+            WriteStatus(directory, "WTD-7", sharedWrite.AddMinutes(10), sharedWrite);
+            Assert(!HostStatusClock.TryReadOffset(directory, "WTD-10", now, TimeSpan.Zero, out offset),
                 "status from another device is rejected");
-            WriteStatus(directory, "WTD-10", sharedWrite.AddMinutes(11), sharedWrite);
-            Assert(!HostStatusClock.TryReadOffset(directory, "WTD-10", now.AddMinutes(4), TimeSpan.FromMinutes(1), out offset),
+            WriteStatus(directory, "WTD-10", sharedWrite.AddMinutes(10), sharedWrite);
+            Assert(!HostStatusClock.TryReadOffset(directory, "WTD-10", now.AddMinutes(4), TimeSpan.Zero, out offset),
                 "stale status is rejected");
             WriteStatus(directory, "WTD-10", sharedWrite.AddHours(3), sharedWrite);
-            Assert(!HostStatusClock.TryReadOffset(directory, "WTD-10", now, TimeSpan.FromMinutes(1), out offset),
+            Assert(!HostStatusClock.TryReadOffset(directory, "WTD-10", now, TimeSpan.Zero, out offset),
                 "offset beyond two hours is rejected");
             File.WriteAllText(Path.Combine(directory, "host-status.json"), "{broken");
-            Assert(!HostStatusClock.TryReadOffset(directory, "WTD-10", now, TimeSpan.FromMinutes(1), out offset),
+            Assert(!HostStatusClock.TryReadOffset(directory, "WTD-10", now, TimeSpan.Zero, out offset),
                 "malformed status is rejected");
         });
     }
@@ -251,6 +252,20 @@ internal static class CollectorTests
                 if (Text(item, "machineName") == "WTD-10")
                     Assert((int)((Dictionary<string, object>)item["attributes"])["clockOffsetSeconds"] == 600,
                         "queued correction remains fixed when device clock changes");
+        });
+    }
+
+    private static void CollectorClockSkewDoesNotDistortSharedTimestamp()
+    {
+        InTempDirectory(delegate(string directory)
+        {
+            DateTime qmsNow = new DateTime(2026, 11, 19, 1, 48, 30, DateTimeKind.Utc);
+            DateTime sharedWrite = qmsNow.AddSeconds(-30);
+            WriteStatus(directory, "WTD-10", sharedWrite.AddMinutes(10), sharedWrite);
+            int offset;
+            Assert(HostStatusClock.TryReadOffset(directory, "WTD-10", qmsNow.AddMinutes(10),
+                TimeSpan.FromMinutes(-10), out offset)
+                && offset == 600, "collector clock ten minutes ahead does not alter SCBGX file time");
         });
     }
 
