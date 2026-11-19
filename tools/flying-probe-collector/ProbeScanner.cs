@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.IO;
 using System.Text;
 
@@ -41,9 +42,16 @@ internal sealed class ProbeScanner
 
     public void ScanOnce(Func<bool> shouldStop)
     {
+        ScanOnce(shouldStop, null);
+    }
+
+    public void ScanOnce(Func<bool> shouldStop, Func<TimeSpan?> qmsClock)
+    {
         if (shouldStop == null) throw new ArgumentNullException("shouldStop");
         LastScanHadError = false;
         if (shouldStop()) return;
+        bool clockAttempted = false;
+        TimeSpan? qmsOffset = null;
         string[] directories;
         try
         {
@@ -78,11 +86,29 @@ internal sealed class ProbeScanner
                 Issue("Device directory inaccessible: " + directory + ": " + error.Message);
                 continue;
             }
+            int? deviceOffset = null;
+            if (qmsClock != null && Array.Exists(files, delegate(string path)
+                { return string.Equals(Path.GetFileName(path), "host-status.json", StringComparison.OrdinalIgnoreCase); }))
+            {
+                if (!clockAttempted)
+                {
+                    clockAttempted = true;
+                    try { qmsOffset = qmsClock(); }
+                    catch (Exception error) { Log("QMS clock unavailable: " + error.GetType().Name); }
+                }
+                if (qmsOffset.HasValue)
+                {
+                    int seconds;
+                    string machineName = Path.GetFileName(directory);
+                    if (HostStatusClock.TryReadOffset(directory, machineName, DateTime.UtcNow,
+                        qmsOffset.Value, out seconds)) deviceOffset = seconds;
+                }
+            }
             foreach (string file in files)
             {
                 if (shouldStop()) return;
                 if (!string.Equals(Path.GetExtension(file), ".txt", StringComparison.OrdinalIgnoreCase)) continue;
-                try { ScanFile(directory, file); }
+                try { ScanFile(directory, file, deviceOffset); }
                 catch (IOException error) { Issue("File unavailable: " + file + ": " + error.Message); }
                 catch (UnauthorizedAccessException error) { Issue("File inaccessible: " + file + ": " + error.Message); }
                 catch (FormatException error) { Issue("Invalid counters: " + file + ": " + error.Message); }
@@ -90,7 +116,7 @@ internal sealed class ProbeScanner
         }
     }
 
-    private void ScanFile(string directory, string file)
+    private void ScanFile(string directory, string file, int? deviceOffset)
     {
         FileInfo info = new FileInfo(file);
         info.Refresh();
@@ -110,6 +136,17 @@ internal sealed class ProbeScanner
         string material = Path.GetFileNameWithoutExtension(file);
         string relativePath = machine + "/" + Path.GetFileName(file);
         Dictionary<string, object> eventItem = ProbeRecords.CreateEvent(machine, material, relativePath, info.CreationTime, info.LastWriteTime, counters);
+        if (deviceOffset.HasValue)
+        {
+            try
+            {
+                Dictionary<string, object> attributes = (Dictionary<string, object>)eventItem["attributes"];
+                attributes["correctedDeviceTime"] = info.LastWriteTime.AddSeconds(-deviceOffset.Value).ToString(
+                    "yyyy-MM-ddTHH:mm:ss", CultureInfo.InvariantCulture);
+                attributes["clockOffsetSeconds"] = deviceOffset.Value;
+            }
+            catch (ArgumentOutOfRangeException) { }
+        }
         string recordNo = (string)eventItem["recordNo"];
         if (checkpoints.Contains(relativePath, recordNo)) return;
         pending.Enqueue(eventItem);

@@ -72,6 +72,8 @@ internal sealed class CollectorRuntime
                     }
                 };
                 ProbeScanner scanner = new ProbeScanner(settings.SourceRoot, pending, checkpoints, log, publish);
+                ServerClockProbe clock = new ServerClockProbe(settings.QmsBaseUrl, settings.GatewayToken,
+                    settings.RequestTimeoutSeconds);
                 QmsSender sender = new QmsSender(settings.QmsBaseUrl, settings.GatewayToken, settings.BearerToken,
                     settings.RequestTimeoutSeconds, pending, log, publish);
                 HostStatusSender hostSender = new HostStatusSender(settings.QmsBaseUrl, settings.GatewayToken,
@@ -87,7 +89,15 @@ internal sealed class CollectorRuntime
                         {
                             bool scanError = false;
                             bool sendError = false;
-                            try { scanner.ScanOnce(delegate { return stop.WaitOne(0); }); scanError = scanner.LastScanHadError; }
+                            try
+                            {
+                                scanner.ScanOnce(delegate { return stop.WaitOne(0); }, delegate
+                                {
+                                    TimeSpan offset;
+                                    return clock.TrySample(out offset) ? (TimeSpan?)offset : null;
+                                });
+                                scanError = scanner.LastScanHadError;
+                            }
                             catch (Exception error) { scanError = true; Log("Scan failed: " + error.Message); }
                             if (scanError) Report(CollectorNoticeKind.ScanError);
                             try { sender.SendPending(delegate { return stop.WaitOne(0); }); sendError = sender.LastSendFailed; }

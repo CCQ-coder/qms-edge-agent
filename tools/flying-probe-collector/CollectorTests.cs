@@ -66,6 +66,12 @@ internal static class CollectorTests
             Run("ParseSample", ParseSample);
             Run("RejectMalformed", RejectMalformed);
             Run("MapEvent", MapEvent);
+            Run("ClockProbeMidpoint", ClockProbeMidpoint);
+            Run("ClockProbeAuthenticatedRequest", ClockProbeAuthenticatedRequest);
+            Run("StatusOffsetValidation", StatusOffsetValidation);
+            Run("CollectorClockSkewDoesNotDistortSharedTimestamp", CollectorClockSkewDoesNotDistortSharedTimestamp);
+            Run("ScannerCorrectsDeviceClocks", ScannerCorrectsDeviceClocks);
+            Run("InvalidStatusDoesNotBlockTxt", InvalidStatusDoesNotBlockTxt);
             Run("CpuPercentFromCounters", CpuPercentFromCounters);
             if (Environment.OSVersion.Platform == PlatformID.Win32NT) Run("CaptureHostStatusOnWindows", CaptureHostStatusOnWindows);
             else Console.WriteLine("SKIP CaptureHostStatusOnWindows (requires Windows)");
@@ -218,6 +224,173 @@ internal static class CollectorTests
         Assert(sample.MemoryTotalBytes > 0 && sample.MemoryAvailableBytes <= sample.MemoryTotalBytes, "physical memory");
         Assert(sample.SystemDiskTotalBytes > 0 && sample.SystemDiskFreeBytes <= sample.SystemDiskTotalBytes, "system disk");
         Assert(sample.UptimeSeconds >= 0, "uptime");
+    }
+
+    private static void ClockProbeMidpoint()
+    {
+        DateTime start = new DateTime(2026, 11, 19, 1, 48, 0, DateTimeKind.Utc);
+        DateTime end = start.AddMilliseconds(400);
+        TimeSpan offset;
+        Assert(ServerClockProbe.TryCalculateOffset("{\"serverTime\":\"2026-11-19T01:58:00.200Z\"}",
+            start, end, out offset) && offset == TimeSpan.FromMinutes(10), "QMS time uses RTT midpoint");
+        Assert(ServerClockProbe.TryCalculateOffset("{\"serverTime\":\"2026-11-19T01:58:00.200123456Z\"}",
+            start, end, out offset) && Math.Abs(offset.TotalSeconds - 600.0001234) < 0.000001,
+            "Java nanosecond timestamp is accepted");
+        Assert(!ServerClockProbe.TryCalculateOffset("{\"serverTime\":\"2026-11-19T01:58:00.200Z\"}",
+            start, start.AddSeconds(2), out offset), "slow clock response is rejected");
+        Assert(!ServerClockProbe.TryCalculateOffset("{\"serverTime\":\"invalid\"}",
+            start, end, out offset), "invalid QMS time is rejected");
+    }
+
+    private static void ClockProbeAuthenticatedRequest()
+    {
+        using (HttpFixture server = new HttpFixture())
+        {
+            server.ExpectedClockRequests = 1;
+            server.ResponseBody = "{\"serverTime\":\"" + DateTime.UtcNow.AddMinutes(10).ToString("yyyy-MM-ddTHH:mm:ss.fff'Z'", CultureInfo.InvariantCulture) + "\"}";
+            TimeSpan offset;
+            Assert(new ServerClockProbe(server.BaseUrl, "gateway-secret", 2).TrySample(out offset), "QMS clock response accepted");
+            server.WaitForRequests();
+            Assert(server.Requests[0].FirstLine.StartsWith("GET /api/v1/gateway/server-time ", StringComparison.Ordinal),
+                "clock probe uses server-time route");
+            Assert(server.Requests[0].Headers["X-Gateway-Token"] == "gateway-secret", "clock probe is authenticated");
+            Assert(!server.Requests[0].Headers.ContainsKey("Authorization"), "clock probe uses gateway-only authentication");
+            Assert(Math.Abs(offset.TotalSeconds - 600) < 2, "clock probe measures local-to-QMS offset");
+        }
+        TimeSpan unavailable;
+        Assert(!new ServerClockProbe("http://127.0.0.1:1", "gateway-secret", 1).TrySample(out unavailable),
+            "unavailable QMS clock is ignored");
+    }
+
+    private static void StatusOffsetValidation()
+    {
+        InTempDirectory(delegate(string directory)
+        {
+            DateTime now = new DateTime(2026, 11, 19, 1, 48, 30, DateTimeKind.Utc);
+            DateTime sharedWrite = new DateTime(2026, 11, 19, 1, 47, 0, DateTimeKind.Utc);
+            int offset;
+            WriteStatus(directory, "WTD-10", sharedWrite.AddMinutes(10), sharedWrite);
+            Assert(HostStatusClock.TryReadOffset(directory, "WTD-10", now, TimeSpan.Zero, out offset)
+                && offset == 600, "device clock ahead by ten minutes after QMS clock adjustment");
+            WriteStatus(directory, "WTD-10", sharedWrite.AddMinutes(-10), sharedWrite);
+            Assert(HostStatusClock.TryReadOffset(directory, "WTD-10", now, TimeSpan.Zero, out offset)
+                && offset == -600, "device clock behind by ten minutes");
+            WriteStatus(directory, "WTD-7", sharedWrite.AddMinutes(10), sharedWrite);
+            Assert(!HostStatusClock.TryReadOffset(directory, "WTD-10", now, TimeSpan.Zero, out offset),
+                "status from another device is rejected");
+            WriteStatus(directory, "WTD-10", sharedWrite.AddMinutes(10), sharedWrite);
+            Assert(!HostStatusClock.TryReadOffset(directory, "WTD-10", now.AddMinutes(4), TimeSpan.Zero, out offset),
+                "stale status is rejected");
+            WriteStatus(directory, "WTD-10", sharedWrite.AddHours(3), sharedWrite);
+            Assert(!HostStatusClock.TryReadOffset(directory, "WTD-10", now, TimeSpan.Zero, out offset),
+                "offset beyond two hours is rejected");
+            File.WriteAllText(Path.Combine(directory, "host-status.json"), "{broken");
+            Assert(!HostStatusClock.TryReadOffset(directory, "WTD-10", now, TimeSpan.Zero, out offset),
+                "malformed status is rejected");
+        });
+    }
+
+    private static void ScannerCorrectsDeviceClocks()
+    {
+        InTempDirectory(delegate(string directory)
+        {
+            string root = Path.Combine(directory, "source");
+            DateTime sharedNow = new DateTime(DateTime.UtcNow.Ticks / TimeSpan.TicksPerSecond * TimeSpan.TicksPerSecond, DateTimeKind.Utc);
+            foreach (string deviceId in new string[] { "WTD-10", "WTD-7" })
+            {
+                string device = Path.Combine(root, deviceId);
+                Directory.CreateDirectory(device);
+                string txt = Path.Combine(device, "MAT-1.txt");
+                File.WriteAllText(txt, "Test_Counters 2 1 1 00:26:59");
+                File.SetLastWriteTime(txt, new DateTime(2026, 11, 19, 9, 58, 0));
+                WriteStatus(device, deviceId, sharedNow.AddMinutes(deviceId == "WTD-10" ? 10 : -10), sharedNow);
+            }
+            PendingEventStore queue = new PendingEventStore(Path.Combine(directory, "pending.json"));
+            ProbeScanner scanner = new ProbeScanner(root, queue,
+                new ScanCheckpointStore(Path.Combine(directory, "checkpoint.json")), delegate(string message) { });
+            Func<TimeSpan?> qmsClock = delegate { return TimeSpan.Zero; };
+            scanner.ScanOnce(delegate { return false; }, qmsClock);
+            scanner.ScanOnce(delegate { return false; }, qmsClock);
+            Assert(queue.Snapshot().Count == 2, "both stable TXT files are queued");
+            foreach (Dictionary<string, object> item in queue.Snapshot())
+            {
+                string machine = Text(item, "machineName");
+                Dictionary<string, object> attributes = (Dictionary<string, object>)item["attributes"];
+                Assert(Text(item, "deviceTime") == "2026-11-19T09:58:00", "raw TXT time remains unchanged");
+                Assert(Text(attributes, "correctedDeviceTime") == (machine == "WTD-10" ?
+                    "2026-11-19T09:48:00" : "2026-11-19T10:08:00"), "signed offset corrects detection time");
+                Assert((int)attributes["clockOffsetSeconds"] == (machine == "WTD-10" ? 600 : -600),
+                    "signed offset is persisted with event");
+                Dictionary<string, object> original = ProbeRecords.CreateEvent(machine, "MAT-1", machine + "/MAT-1.txt",
+                    File.GetCreationTime(Path.Combine(root, machine, "MAT-1.txt")),
+                    File.GetLastWriteTime(Path.Combine(root, machine, "MAT-1.txt")), ProbeRecords.Parse("Test_Counters 2 1 1 00:26:59"));
+                Assert(Text(item, "recordNo") == Text(original, "recordNo"), "clock correction preserves record identity");
+            }
+            string status = Path.Combine(root, "WTD-10", "host-status.json");
+            WriteStatus(Path.GetDirectoryName(status), "WTD-10", sharedNow.AddMinutes(30), sharedNow);
+            scanner.ScanOnce(delegate { return false; }, qmsClock);
+            IList<Dictionary<string, object>> persisted = new PendingEventStore(Path.Combine(directory, "pending.json")).Snapshot();
+            Assert(persisted.Count == 2, "clock change does not requeue unchanged TXT");
+            foreach (Dictionary<string, object> item in persisted)
+                if (Text(item, "machineName") == "WTD-10")
+                    Assert((int)((Dictionary<string, object>)item["attributes"])["clockOffsetSeconds"] == 600,
+                        "queued correction remains fixed when device clock changes");
+        });
+    }
+
+    private static void CollectorClockSkewDoesNotDistortSharedTimestamp()
+    {
+        InTempDirectory(delegate(string directory)
+        {
+            DateTime qmsNow = new DateTime(2026, 11, 19, 1, 48, 30, DateTimeKind.Utc);
+            DateTime sharedWrite = qmsNow.AddSeconds(-30);
+            WriteStatus(directory, "WTD-10", sharedWrite.AddMinutes(10), sharedWrite);
+            int offset;
+            Assert(HostStatusClock.TryReadOffset(directory, "WTD-10", qmsNow.AddMinutes(10),
+                TimeSpan.FromMinutes(-10), out offset)
+                && offset == 600, "collector clock ten minutes ahead does not alter SCBGX file time");
+        });
+    }
+
+    private static void InvalidStatusDoesNotBlockTxt()
+    {
+        InTempDirectory(delegate(string directory)
+        {
+            string root = Path.Combine(directory, "source");
+            string device = Path.Combine(root, "WTD-10");
+            Directory.CreateDirectory(device);
+            File.WriteAllText(Path.Combine(device, "MAT-1.txt"), "Test_Counters 1 1 0 00:01:00");
+            DateTime sampled = DateTime.UtcNow;
+            WriteStatus(device, "WTD-10", sampled, sampled);
+            PendingEventStore queue = new PendingEventStore(Path.Combine(directory, "pending.json"));
+            ProbeScanner scanner = new ProbeScanner(root, queue,
+                new ScanCheckpointStore(Path.Combine(directory, "checkpoint.json")), delegate(string message) { });
+            ServerClockProbe unavailable = new ServerClockProbe("http://127.0.0.1:1", "gateway-secret", 1);
+            Func<TimeSpan?> noClock = delegate { TimeSpan offset; return unavailable.TrySample(out offset) ? (TimeSpan?)offset : null; };
+            scanner.ScanOnce(delegate { return false; }, noClock);
+            scanner.ScanOnce(delegate { return false; }, noClock);
+            Assert(queue.Snapshot().Count == 1, "TXT is queued when clock reference is unavailable");
+            Dictionary<string, object> attributes = (Dictionary<string, object>)queue.Snapshot()[0]["attributes"];
+            Assert(!attributes.ContainsKey("correctedDeviceTime") && !attributes.ContainsKey("clockOffsetSeconds"),
+                "uncalibrated event has no fabricated corrected time");
+        });
+    }
+
+    private static void WriteStatus(string directory, string deviceId, DateTime sampledUtc, DateTime fileWriteUtc)
+    {
+        Dictionary<string, object> status = new Dictionary<string, object>();
+        status["schemaVersion"] = 1;
+        status["deviceId"] = deviceId;
+        status["sampledAt"] = sampledUtc.ToString("yyyy-MM-ddTHH:mm:ss.fff'Z'", CultureInfo.InvariantCulture);
+        status["cpuPercent"] = 32.5;
+        status["memoryTotalBytes"] = 3455590400L;
+        status["memoryAvailableBytes"] = 2778652672L;
+        status["systemDiskTotalBytes"] = 85900390400L;
+        status["systemDiskFreeBytes"] = 78561525760L;
+        status["uptimeSeconds"] = 183817;
+        string path = Path.Combine(directory, "host-status.json");
+        File.WriteAllText(path, new JavaScriptSerializer().Serialize(status));
+        File.SetLastWriteTimeUtc(path, fileWriteUtc);
     }
 
     private static void RecoverPending()
@@ -1354,8 +1527,10 @@ internal static class CollectorTests
         private Exception failure;
         public string BaseUrl { get; private set; }
         public string RedirectLocation { get; set; }
+        public string ResponseBody { get; set; }
         public int HostStatusCode { get; set; }
         public int ExpectedHostRequests { get; set; }
+        public int ExpectedClockRequests { get; set; }
         public List<CapturedRequest> Requests { get { return requests; } }
 
         public HttpFixture(params int[] statuses)
@@ -1387,9 +1562,14 @@ internal static class CollectorTests
                 "; failure=" + (failure == null ? "none" : failure.ToString()));
             if (failure != null) throw new Exception("HTTP fixture failed", failure);
             int telemetryCount = requests.FindAll(delegate(CapturedRequest request)
-            { return !request.FirstLine.Contains("/api/v1/gateway/host-status"); }).Count;
-            int hostCount = requests.Count - telemetryCount;
-            Assert(telemetryCount == statuses.Length && hostCount >= ExpectedHostRequests,
+            { return !request.FirstLine.Contains("/api/v1/gateway/host-status") &&
+                !request.FirstLine.Contains("/api/v1/gateway/server-time"); }).Count;
+            int hostCount = requests.FindAll(delegate(CapturedRequest request)
+            { return request.FirstLine.Contains("/api/v1/gateway/host-status"); }).Count;
+            int clockCount = requests.FindAll(delegate(CapturedRequest request)
+            { return request.FirstLine.Contains("/api/v1/gateway/server-time"); }).Count;
+            Assert(telemetryCount == statuses.Length && hostCount >= ExpectedHostRequests &&
+                clockCount >= ExpectedClockRequests,
                 "expected HTTP request count");
         }
 
@@ -1399,7 +1579,9 @@ internal static class CollectorTests
             {
                 int telemetryIndex = 0;
                 int hostCount = 0;
-                while (telemetryIndex < statuses.Length || hostCount < ExpectedHostRequests)
+                int clockCount = 0;
+                while (telemetryIndex < statuses.Length || hostCount < ExpectedHostRequests ||
+                    clockCount < ExpectedClockRequests)
                 {
                     using (TcpClient client = listener.AcceptTcpClient())
                     using (NetworkStream stream = client.GetStream())
@@ -1430,14 +1612,22 @@ internal static class CollectorTests
                         request.Body = new string(body);
                         requests.Add(request);
                         bool host = request.FirstLine.Contains("/api/v1/gateway/host-status");
-                        int status = host ? HostStatusCode : statuses[telemetryIndex];
+                        bool clock = request.FirstLine.Contains("/api/v1/gateway/server-time");
+                        int status = clock ? 200 : host ? HostStatusCode : statuses[telemetryIndex];
                         if (host) hostCount++;
-                        else telemetryIndex++;
+                        else if (clock) clockCount++;
+                        else if (!clock) telemetryIndex++;
                         string location = status >= 300 && status < 400 && RedirectLocation != null ?
                             "Location: " + RedirectLocation + "\r\n" : "";
+                        string responseBody = clock && ResponseBody == null ?
+                            "{\"serverTime\":\"" + DateTime.UtcNow.ToString("yyyy-MM-ddTHH:mm:ss.fff'Z'", CultureInfo.InvariantCulture) + "\"}" :
+                            ResponseBody ?? "";
+                        byte[] bodyBytes = Encoding.UTF8.GetBytes(responseBody);
                         byte[] response = Encoding.ASCII.GetBytes("HTTP/1.1 " + status.ToString(CultureInfo.InvariantCulture) +
-                            " Result\r\n" + location + "Content-Length: 0\r\nConnection: close\r\n\r\n");
+                            " Result\r\n" + location + "Content-Length: " + bodyBytes.Length.ToString(CultureInfo.InvariantCulture) +
+                            "\r\nConnection: close\r\n\r\n");
                         stream.Write(response, 0, response.Length);
+                        stream.Write(bodyBytes, 0, bodyBytes.Length);
                     }
                 }
             }

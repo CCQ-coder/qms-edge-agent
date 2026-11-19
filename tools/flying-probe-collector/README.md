@@ -28,6 +28,8 @@
 
 每台飞针机上的 `IniShareSync.exe --status-only` 每分钟将状态写成 `<SourceRoot>\<device_id>\host-status.json`。本程序只读取设备目录第一层的这一文件，校验版本、目录编号、UTC 时间、大小及数值范围后，用现有网关凭据发送到 QMS。发送请求的 `hostName` 是配置中的设备编号，须在 QMS“设备网关映射”中绑定到该飞针机；SCBGX 电脑名仍单独代表监听电脑。设备端无需保存 QMS 凭据。转发成功后，`data\scan-checkpoints.json.host-status.json` 记录快照指纹；相同内容不会重复发送，也不会延长已停机设备的在线时间。QMS 或共享目录故障时，下一轮会重试最新快照；状态错误不影响 TXT 待发队列。
 
+若设备目录有有效的 `host-status.json`，采集器会用设备的 `sampledAt` 与 SCBGX 共享文件修改时间估算该设备的时钟偏差，为新入队的 TXT 事件写入 `attributes.correctedDeviceTime` 和 `clockOffsetSeconds`。采集器通过 QMS 的 `GET /api/v1/gateway/server-time` 核验状态文件新鲜度，因此需先部署支持该接口的 QMS。原始 `deviceTime` 和记录号保持不变；状态文件无效或 QMS 时间接口不可用时仍同步 TXT，但不附加校时时间。已同步的旧记录不会自动重写。
+
 ## 现场验证
 
 1. 用运行程序的 Windows 账户打开共享目录，确认能看到设备子目录和 TXT 文件。
